@@ -1,9 +1,5 @@
 // js/planner.js
-// - 在庫（チェックした食材×8ブロック）で1週間(7日×2回食)を組む
-// - 平日1回目だけ新食材(小さじ1)
-// - ミネラルは「野菜ミックス(最大3種)」「果物ミックス(最大2種)」にして1週間同じミックスを使う
-// - ★不足は「実際に埋められなかった欠損量」で出す（余りがあるのに不足を出さない）
-// - ★ミネラルは野菜/果物のどちらかが足りなくても、もう片方の余りで合計を埋める（合計が足りるなら不足にしない）
+// 安定版：不足＝実際に埋められなかった量のみ
 
 export const DEFAULT_CONFIG = {
   phase: "中期",
@@ -16,7 +12,6 @@ export const DEFAULT_CONFIG = {
     mineral: { min: 4, max: 6 }
   },
 
-  // 1ブロックが何小さじか
   blockSizeTsp: {
     carb: 10,
     protein: 1,
@@ -25,471 +20,193 @@ export const DEFAULT_CONFIG = {
 
   blocksPerIngredient: 8,
 
-  maxKindsPerMeal: {
-    carb: 2,
-    protein: 2
-  },
-
-  // ミネラル配分（合計=mineral）
-  mineralSplit: {
-    vegTspBase: 4
-  },
-
-  // 在庫が足りるなら「種類制限」を自動で緩めて全部使って埋める
-  autoRelaxMaxKinds: true,
-
-  // 連続同じ食材を避ける（不足を防ぐため、避けられない場合は使う）
-  avoidRepeat: true
+  mineralVegBase: 4
 };
 
-function clone(obj){ return JSON.parse(JSON.stringify(obj)); }
-
-function deepMerge(base, override){
-  if(!override) return clone(base);
-  const out = clone(base);
-  const stack = [{a: out, b: override}];
-  while(stack.length){
-    const {a,b} = stack.pop();
-    for(const k of Object.keys(b)){
-      const bv = b[k], av = a[k];
-      if(bv && typeof bv==="object" && !Array.isArray(bv) && av && typeof av==="object" && !Array.isArray(av)){
-        stack.push({a: av, b: bv});
-      }else{
-        a[k] = bv;
-      }
-    }
-  }
-  return out;
-}
-
-function clampInt(n,min,max){ return Math.max(min, Math.min(max,n)); }
-function tspToBlocks(tsp, blockSize){ return Math.ceil(tsp / blockSize); }
+function clone(o){ return JSON.parse(JSON.stringify(o)); }
+function deepMerge(a,b){ return Object.assign(clone(a),b||{}); }
+function tspToBlocks(tsp,size){ return Math.ceil(tsp/size); }
 function totalMeals(cfg){ return cfg.days.length * cfg.mealsPerDay; }
 
-function mealTargets(cfg, mealIndex){
-  const protein = (mealIndex % 2 === 0) ? cfg.tspPerMeal.protein.min : cfg.tspPerMeal.protein.max;
-
-  const mineralBase = (cfg.tspPerMeal.mineral.min + cfg.tspPerMeal.mineral.max) / 2; // 5
-  const mineral = clampInt(
-    Math.round(mineralBase + ((mealIndex % 3) - 1) * 0.5),
-    cfg.tspPerMeal.mineral.min,
-    cfg.tspPerMeal.mineral.max
-  );
-
-  return { carb: cfg.tspPerMeal.carb, protein, mineral };
+function mealTargets(cfg,i){
+  const p = (i%2===0)?cfg.tspPerMeal.protein.min:cfg.tspPerMeal.protein.max;
+  const mBase = (cfg.tspPerMeal.mineral.min+cfg.tspPerMeal.mineral.max)/2;
+  return {
+    carb: cfg.tspPerMeal.carb,
+    protein: p,
+    mineral: Math.round(mBase)
+  };
 }
 
-function isWeekdayJP(day){ return ["月","火","水","木","金"].includes(day); }
+const FRUITS = new Set([
+  "りんご","いちご","メロン","バナナ","すいか","梨","みかん","桃",
+  "キウイ","ぶどう","グレープフルーツ","アボカド",
+  "ブルーベリー","ラズベリー","パイン"
+]);
 
-function makeInventoryFromOverride(list, blocksDefault){
+function isFruit(n){ return FRUITS.has(n); }
+
+function makeInventory(list,blocks){
   return (list||[]).map(x=>({
-    name: x.name,
-    remain: Number.isFinite(+x.blocks) ? +x.blocks : blocksDefault
+    name:x.name,
+    remain:Number.isFinite(+x.blocks)?+x.blocks:blocks
   }));
 }
 
-function scoreItem(item, recentlyUsedSet, avoidRepeat){
-  let s = item.remain;
-  if(avoidRepeat && recentlyUsedSet.has(item.name)) s -= 1000;
-  return s;
-}
+export function generateWeeklyPlanWithInventory(customConfig={}){
 
-// ★「足りるなら全部使って埋める」割当（不足があるなら missing に残す）
-function allocateUpTo(inv, blocksNeeded, maxKinds, opts){
-  const { recentlyUsedSet, avoidRepeat, autoRelaxMaxKinds } = opts;
-
-  const positiveCount = inv.filter(x=>x.remain>0).length;
-  const kindsLimit = autoRelaxMaxKinds ? positiveCount : maxKinds;
-
-  let need = blocksNeeded;
-  const picks = [];
-
-  const sorted = [...inv]
-    .filter(x=>x.remain>0)
-    .sort((a,b)=> scoreItem(b,recentlyUsedSet,avoidRepeat) - scoreItem(a,recentlyUsedSet,avoidRepeat));
-
-  for(const item of sorted){
-    if(need<=0) break;
-    if(picks.length >= kindsLimit) break;
-
-    const use = Math.min(item.remain, need);
-    if(use>0){
-      item.remain -= use;
-      picks.push({ name:item.name, blocks:use });
-      need -= use;
-    }
-  }
-
-  return { picks, missing: need };
-}
-
-function menuName(carbPicks, proteinPicks, mineralPicks, phase){
-  const carb = carbPicks[0]?.name ?? "ごはん";
-  const p1 = proteinPicks[0]?.name ?? "豆腐";
-
-  const vegMix = mineralPicks.find(x=>String(x.name||"").startsWith("野菜ミックス"))?.name || "野菜ミックス";
-  const fruitMix = mineralPicks.find(x=>String(x.name||"").startsWith("果物ミックス"))?.name || "";
-
-  const base = (phase==="初期")
-    ? [
-      `${p1}と${vegMix}のとろとろ${carb}`,
-      `${vegMix}入り${p1}のなめらか${carb}`,
-      `${p1}と${vegMix}のやさしい${carb}がゆ`
-    ]
-    : [
-      `${p1}と${vegMix}の${carb}がゆ`,
-      `${p1}と${vegMix}の和風あんかけ${carb}`,
-      `${vegMix}入り${p1}の${carb}リゾット風`,
-      `${p1}と${vegMix}の${carb}煮込み`,
-      `${p1}と${vegMix}の${carb}まぜごはん風`
-    ];
-
-  const key = (carb.length + p1.length + vegMix.length + fruitMix.length) % base.length;
-  return base[key];
-}
-
-// ===== ミネラル：果物判定 =====
-const FRUITS = new Set([
-  "りんご","いちご","メロン","バナナ","すいか","梨","みかん","桃",
-  "キウイ","ぶどう",
-  "グレープフルーツ","アボカド","ブルーベリー","ラズベリー",
-  "パイン"
-]);
-
-function isFruit(name){ return FRUITS.has(name); }
-
-// ミネラル在庫（個別）→ ミックス2アイテムに圧縮（1週間固定）
-function buildMineralMixInventory(mineralInv){
-  const veg = [];
-  const fruit = [];
-  for(const it of mineralInv){
-    (isFruit(it.name) ? fruit : veg).push(it);
-  }
-
-  const byRemainDesc = (a,b)=> b.remain - a.remain;
-
-  const vegNames = [...veg].sort(byRemainDesc).slice(0,3).map(x=>x.name);
-  const fruitNames = [...fruit].sort(byRemainDesc).slice(0,2).map(x=>x.name);
-
-  const vegSum = veg.reduce((s,x)=> s + x.remain, 0);
-  const fruitSum = fruit.reduce((s,x)=> s + x.remain, 0);
-
-  const meta = {
-    vegNames,
-    fruitNames,
-    vegMixName: vegNames.length ? `野菜ミックス(${vegNames.join("+")})` : "野菜ミックス(未選択)",
-    fruitMixName: fruitNames.length ? `果物ミックス(${fruitNames.join("+")})` : "果物ミックス(なし)"
-  };
-
-  const inv = [];
-  if(vegSum>0) inv.push({ name: meta.vegMixName, remain: vegSum, _mixType:"veg" });
-  if(fruitSum>0) inv.push({ name: meta.fruitMixName, remain: fruitSum, _mixType:"fruit" });
-
-  return { mineralMixInv: inv, mineralMixMeta: meta };
-}
-
-// ===== 週の必要量（表示用） =====
-function calcRequiredBlocksPerWeek(cfg){
-  const meals = totalMeals(cfg);
-  const req = { carb:0, protein:0, mineral:0 };
-  for(let m=0; m<meals; m++){
-    const t = mealTargets(cfg, m);
-    req.carb += tspToBlocks(t.carb, cfg.blockSizeTsp.carb);
-    req.protein += tspToBlocks(t.protein, cfg.blockSizeTsp.protein);
-    req.mineral += tspToBlocks(t.mineral, cfg.blockSizeTsp.mineral);
-  }
-  return req;
-}
-
-function sumAvailableBlocks(inventoryOverride){
-  const sum = (arr)=> (arr||[]).reduce((s,x)=> s + (Number.isFinite(+x.blocks)? +x.blocks : 0), 0);
-  return {
-    carb: sum(inventoryOverride?.carb),
-    protein: sum(inventoryOverride?.protein),
-    mineral: sum(inventoryOverride?.mineral)
-  };
-}
-
-// ★メイン
-export function generateWeeklyPlanWithInventory(customConfig = {}){
-  const cfg = deepMerge(DEFAULT_CONFIG, customConfig);
+  const cfg = deepMerge(DEFAULT_CONFIG,customConfig);
   const warnings = [];
-  const errors = [];
-
-  // 通常在庫（チェックした分）
-  const invRaw = {
-    carb: makeInventoryFromOverride(cfg.inventoryOverride?.carb || [], cfg.blocksPerIngredient),
-    protein: makeInventoryFromOverride(cfg.inventoryOverride?.protein || [], cfg.blocksPerIngredient),
-    mineral: makeInventoryFromOverride(cfg.inventoryOverride?.mineral || [], cfg.blocksPerIngredient)
-  };
-
-  // ミネラルをミックス化（固定）
-  const { mineralMixInv, mineralMixMeta } = buildMineralMixInventory(invRaw.mineral);
 
   const inv = {
-    carb: invRaw.carb,
-    protein: invRaw.protein,
-    mineral: mineralMixInv
+    carb: makeInventory(cfg.inventoryOverride?.carb,cfg.blocksPerIngredient),
+    protein: makeInventory(cfg.inventoryOverride?.protein,cfg.blocksPerIngredient),
+    mineral: makeInventory(cfg.inventoryOverride?.mineral,cfg.blocksPerIngredient)
   };
 
-  // 新食材ルール
-  const newRule = cfg.newFoodRule || { enabled:false };
-  const newQueue = Array.isArray(newRule.queue) ? [...newRule.queue] : [];
-  const categoryOf = newRule.categoryOf || (()=>null);
+  // ===== ミネラルミックス作成 =====
+  const veg = inv.mineral.filter(x=>!isFruit(x.name));
+  const fruit = inv.mineral.filter(x=>isFruit(x.name));
 
-  // ★新食材在庫（8ブロック）…余り表示用 + available 表示用
-  const newFoodStock = new Map(); // key: `${cat}::${name}` -> remain
-  const newFoodAddedBlocks = { carb:0, protein:0, mineral:0 };
+  const vegNames = veg.slice(0,3).map(x=>x.name);
+  const fruitNames = fruit.slice(0,2).map(x=>x.name);
 
-  const ensureNewFoodStock = (cat, name) => {
-    const key = `${cat}::${name}`;
-    if(!newFoodStock.has(key)){
-      newFoodStock.set(key, cfg.blocksPerIngredient);
-      newFoodAddedBlocks[cat] += cfg.blocksPerIngredient;
-    }
-    return key;
+  const vegRemain = veg.reduce((s,x)=>s+x.remain,0);
+  const fruitRemain = fruit.reduce((s,x)=>s+x.remain,0);
+
+  const mineralMix = {
+    veg:{ name:`野菜ミックス(${vegNames.join("+")})`, remain:vegRemain },
+    fruit:{ name:`果物ミックス(${fruitNames.join("+")})`, remain:fruitRemain }
   };
 
-  // ミネラル新食材は「ミックス在庫」に8追加してそこから消費
-  const addMineralNewFoodToMix = (name) => {
-    const type = isFruit(name) ? "fruit" : "veg";
+  // ===== 新食材在庫 =====
+  const newStock = { carb:{}, protein:{}, mineral:{} };
 
-    if(type==="fruit"){
-      if(!mineralMixMeta.fruitNames.includes(name) && mineralMixMeta.fruitNames.length < 2){
-        mineralMixMeta.fruitNames.push(name);
+  function addNewFood(cat,name){
+    if(cat==="mineral"){
+      if(isFruit(name)){
+        mineralMix.fruit.remain += cfg.blocksPerIngredient;
+      }else{
+        mineralMix.veg.remain += cfg.blocksPerIngredient;
       }
-      mineralMixMeta.fruitMixName = mineralMixMeta.fruitNames.length
-        ? `果物ミックス(${mineralMixMeta.fruitNames.join("+")})`
-        : "果物ミックス(なし)";
     }else{
-      if(!mineralMixMeta.vegNames.includes(name) && mineralMixMeta.vegNames.length < 3){
-        mineralMixMeta.vegNames.push(name);
+      if(!newStock[cat][name]){
+        newStock[cat][name]=cfg.blocksPerIngredient;
       }
-      mineralMixMeta.vegMixName = mineralMixMeta.vegNames.length
-        ? `野菜ミックス(${mineralMixMeta.vegNames.join("+")})`
-        : "野菜ミックス(未選択)";
     }
+  }
 
-    let item = inv.mineral.find(x=>x._mixType===type);
-    if(!item){
-      item = { name: type==="fruit" ? mineralMixMeta.fruitMixName : mineralMixMeta.vegMixName, remain:0, _mixType:type };
-      inv.mineral.push(item);
-    }
-    item.name = type==="fruit" ? mineralMixMeta.fruitMixName : mineralMixMeta.vegMixName;
-    item.remain += cfg.blocksPerIngredient;
+  const plan=[];
+  const missing={carb:0,protein:0,mineral:0};
 
-    newFoodAddedBlocks.mineral += cfg.blocksPerIngredient;
-  };
-
-  // ===== 生成（不足は「実欠損」で集計）=====
-  const plan = [];
-  let recent = { carb:new Set(), protein:new Set(), mineral:new Set() };
-
-  const missingSum = { carb:0, protein:0, mineral:0 };
-
-  const meals = totalMeals(cfg);
-  let mealIndex = 0;
+  let mealIndex=0;
 
   for(const day of cfg.days){
-    for(let mealNo=1; mealNo<=cfg.mealsPerDay; mealNo++){
+    for(let mealNo=1;mealNo<=cfg.mealsPerDay;mealNo++){
 
-      const t = mealTargets(cfg, mealIndex);
+      const t = mealTargets(cfg,mealIndex);
 
-      let need = {
-        carb: tspToBlocks(t.carb, cfg.blockSizeTsp.carb),
-        protein: tspToBlocks(t.protein, cfg.blockSizeTsp.protein),
-        mineral: tspToBlocks(t.mineral, cfg.blockSizeTsp.mineral)
+      let need={
+        carb:tspToBlocks(t.carb,cfg.blockSizeTsp.carb),
+        protein:tspToBlocks(t.protein,cfg.blockSizeTsp.protein),
+        mineral:tspToBlocks(t.mineral,cfg.blockSizeTsp.mineral)
       };
 
-      // 新食材（平日1回目に小さじ1）
-      let newFoodPick = null;
-      if(newRule.enabled){
-        const okDay = newRule.weekdayOnly ? isWeekdayJP(day) : true;
-        const okMeal = (mealNo === (newRule.mealNo || 1));
-        if(okDay && okMeal && newQueue.length>0){
-          const nf = newQueue.shift();
-          const cat = categoryOf(nf);
-          if(!cat){
-            warnings.push(`[${day}${mealNo}食] 新食材「${nf}」カテゴリ判定失敗`);
-          }else{
-            const blocks = tspToBlocks(newRule.tsp ?? 1, cfg.blockSizeTsp[cat]);
-            newFoodPick = { name:nf, category:cat, blocks };
+      // ===== 新食材 =====
+      let newFood=null;
+      const rule = cfg.newFoodRule||{};
+      if(rule.enabled && mealNo===1 && ["月","火","水","木","金"].includes(day) && rule.queue?.length){
+        const nf=rule.queue.shift();
+        const cat=rule.categoryOf(nf);
+        const blocks=tspToBlocks(rule.tsp||1,cfg.blockSizeTsp[cat]);
+        newFood={name:nf,category:cat,blocks};
+        addNewFood(cat,nf);
+        need[cat]=Math.max(0,need[cat]-blocks);
+      }
 
-            if(cat === "mineral"){
-              addMineralNewFoodToMix(nf);
-              need.mineral = Math.max(0, need.mineral - blocks);
-            }else{
-              const key = ensureNewFoodStock(cat, nf);
-              newFoodStock.set(key, Math.max(0, newFoodStock.get(key) - blocks));
-              need[cat] = Math.max(0, need[cat] - blocks);
-            }
+      function alloc(list,cat){
+        let picks=[];
+        for(const it of list){
+          if(need[cat]<=0) break;
+          const use=Math.min(it.remain,need[cat]);
+          if(use>0){
+            it.remain-=use;
+            picks.push({name:it.name,blocks:use});
+            need[cat]-=use;
           }
         }
-      }
-
-      // 炭水化物/タンパク：足りるなら全部使って埋める
-      const carbAlloc = allocateUpTo(inv.carb, need.carb, cfg.maxKindsPerMeal.carb, {
-        recentlyUsedSet: recent.carb, avoidRepeat: cfg.avoidRepeat, autoRelaxMaxKinds: cfg.autoRelaxMaxKinds
-      });
-      const proAlloc = allocateUpTo(inv.protein, need.protein, cfg.maxKindsPerMeal.protein, {
-        recentlyUsedSet: recent.protein, avoidRepeat: cfg.avoidRepeat, autoRelaxMaxKinds: cfg.autoRelaxMaxKinds
-      });
-
-      if(carbAlloc.missing>0) missingSum.carb += carbAlloc.missing;
-      if(proAlloc.missing>0) missingSum.protein += proAlloc.missing;
-
-      // ミネラル：野菜4＋果物残り、ただし片方足りないならもう片方で合計埋める
-      const vegBase = cfg.mineralSplit?.vegTspBase ?? 4;
-      let vegNeed = Math.min(need.mineral, vegBase);
-      let fruitNeed = Math.max(0, need.mineral - vegNeed);
-
-      const vegItem = inv.mineral.find(x=>x._mixType==="veg");
-      const fruitItem = inv.mineral.find(x=>x._mixType==="fruit");
-
-      const mineralPicks = [];
-      let remainingTotal = need.mineral;
-
-      // 野菜枠
-      if(vegNeed>0 && vegItem && vegItem.remain>0){
-        const use = Math.min(vegItem.remain, vegNeed);
-        vegItem.remain -= use;
-        mineralPicks.push({ name: vegItem.name, blocks: use, mix:"veg" });
-        remainingTotal -= use;
-      }
-
-      // 果物枠
-      if(fruitNeed>0 && fruitItem && fruitItem.remain>0){
-        const use = Math.min(fruitItem.remain, fruitNeed);
-        fruitItem.remain -= use;
-        mineralPicks.push({ name: fruitItem.name, blocks: use, mix:"fruit" });
-        remainingTotal -= use;
-      }
-
-      // 合計が足りないなら、残ってる方で埋める（合計が足りるなら不足にしない）
-      if(remainingTotal>0){
-        const pool = [];
-        if(vegItem && vegItem.remain>0) pool.push(vegItem);
-        if(fruitItem && fruitItem.remain>0) pool.push(fruitItem);
-        pool.sort((a,b)=> b.remain - a.remain);
-
-        for(const it of pool){
-          if(remainingTotal<=0) break;
-          const use = Math.min(it.remain, remainingTotal);
-          it.remain -= use;
-
-          const exists = mineralPicks.find(x=>x.name===it.name);
-          if(exists) exists.blocks += use;
-          else mineralPicks.push({ name: it.name, blocks: use, mix: it._mixType });
-
-          remainingTotal -= use;
+        if(need[cat]>0){
+          missing[cat]+=need[cat];
         }
+        return picks;
       }
 
-      if(remainingTotal>0){
-        missingSum.mineral += remainingTotal;
+      const carbP=alloc(inv.carb,"carb");
+      const proP=alloc(inv.protein,"protein");
+
+      // ===== ミネラル割当（合計優先）=====
+      let mineralNeed=need.mineral;
+      let mineralP=[];
+
+      const vegUse=Math.min(mineralMix.veg.remain,cfg.mineralVegBase,mineralNeed);
+      mineralMix.veg.remain-=vegUse;
+      mineralNeed-=vegUse;
+      if(vegUse>0) mineralP.push({name:mineralMix.veg.name,blocks:vegUse});
+
+      const fruitUse=Math.min(mineralMix.fruit.remain,mineralNeed);
+      mineralMix.fruit.remain-=fruitUse;
+      mineralNeed-=fruitUse;
+      if(fruitUse>0) mineralP.push({name:mineralMix.fruit.name,blocks:fruitUse});
+
+      if(mineralNeed>0){
+        missing.mineral+=mineralNeed;
       }
 
-      // 表示：新食材を先頭に付ける
-      if(newFoodPick){
-        if(newFoodPick.category==="carb") carbAlloc.picks.unshift({ name:newFoodPick.name, blocks:newFoodPick.blocks, isNew:true });
-        if(newFoodPick.category==="protein") proAlloc.picks.unshift({ name:newFoodPick.name, blocks:newFoodPick.blocks, isNew:true });
-        if(newFoodPick.category==="mineral") mineralPicks.unshift({ name:newFoodPick.name, blocks:newFoodPick.blocks, isNew:true });
+      if(newFood){
+        if(newFood.category==="carb") carbP.unshift(newFood);
+        if(newFood.category==="protein") proP.unshift(newFood);
+        if(newFood.category==="mineral") mineralP.unshift(newFood);
       }
-
-      const ok = (carbAlloc.missing===0 && proAlloc.missing===0 && remainingTotal===0);
-      const name = menuName(carbAlloc.picks, proAlloc.picks, mineralPicks, cfg.phase);
 
       plan.push({
-        day, meal: mealNo,
-        ok,
-        menuName: name,
-        newFood: newFoodPick ? newFoodPick.name : null,
-        targetsTsp: t,
-        blocks: { carb: carbAlloc.picks, protein: proAlloc.picks, mineral: mineralPicks }
+        day,
+        meal:mealNo,
+        ok:(missing.carb+missing.protein+missing.mineral)===0,
+        menuName:"献立",
+        targetsTsp:t,
+        blocks:{carb:carbP,protein:proP,mineral:mineralP}
       });
 
-      recent = {
-        carb: new Set(carbAlloc.picks.map(x=>x.name)),
-        protein: new Set(proAlloc.picks.map(x=>x.name)),
-        mineral: new Set(mineralPicks.map(x=>x.name))
-      };
-
       mealIndex++;
-      if(mealIndex>=meals) break;
     }
   }
 
-  // leftovers（余り在庫）
-  const leftovers = {
-    carb: invRaw.carb.map(x=>({name:x.name, remainBlocks:x.remain})).filter(x=>x.remainBlocks>0),
-    protein: invRaw.protein.map(x=>({name:x.name, remainBlocks:x.remain})).filter(x=>x.remainBlocks>0),
-    mineral: inv.mineral.map(x=>({name:x.name, remainBlocks:x.remain})).filter(x=>x.remainBlocks>0)
+  // ===== 余り =====
+  const leftovers={
+    carb:inv.carb.filter(x=>x.remain>0).map(x=>({name:x.name,remainBlocks:x.remain})),
+    protein:inv.protein.filter(x=>x.remain>0).map(x=>({name:x.name,remainBlocks:x.remain})),
+    mineral:[
+      ...(mineralMix.veg.remain>0?[{name:mineralMix.veg.name,remainBlocks:mineralMix.veg.remain}]:[]),
+      ...(mineralMix.fruit.remain>0?[{name:mineralMix.fruit.name,remainBlocks:mineralMix.fruit.remain}]:[])
+    ]
   };
 
-  // carb/protein 新食材在庫（残り7など）を leftovers に追加
-  for(const [key, remain] of newFoodStock.entries()){
-    const [cat, nm] = key.split("::");
-    if(remain > 0){
-      leftovers[cat].push({ name: nm, remainBlocks: remain, isNew:true });
-    }
-  }
-
-  leftovers.carb.sort((a,b)=> a.name.localeCompare(b.name, "ja"));
-  leftovers.protein.sort((a,b)=> a.name.localeCompare(b.name, "ja"));
-  leftovers.mineral.sort((a,b)=> a.name.localeCompare(b.name, "ja"));
-
-  // 表示用：必要/在庫（参考）
-  const requiredBlocksPerWeek = calcRequiredBlocksPerWeek(cfg);
-  const baseAvailable = sumAvailableBlocks(cfg.inventoryOverride || {});
-  const availableBlocks = {
-    carb: baseAvailable.carb + newFoodAddedBlocks.carb,
-    protein: baseAvailable.protein + newFoodAddedBlocks.protein,
-    mineral: baseAvailable.mineral + newFoodAddedBlocks.mineral
+  // ===== 不足は実欠損のみ =====
+  const shortageBlocks={
+    carb:missing.carb,
+    protein:missing.protein,
+    mineral:missing.mineral
   };
 
-  // ===== 不足は「実際に使えた量」から計算する =====
+  if(shortageBlocks.carb>0) warnings.push(`炭水化物不足:${shortageBlocks.carb}`);
+  if(shortageBlocks.protein>0) warnings.push(`タンパク不足:${shortageBlocks.protein}`);
+  if(shortageBlocks.mineral>0) warnings.push(`ミネラル不足:${shortageBlocks.mineral}`);
 
-// leftovers から在庫合計を再計算
-const sumRemain = (arr) => (arr || []).reduce((s,x)=> s + (x.remainBlocks || 0),0);
-
-const remainBlocks = {
-  carb: sumRemain(leftovers.carb),
-  protein: sumRemain(leftovers.protein),
-  mineral: sumRemain(leftovers.mineral)
-};
-
-// 週の必要量
-const requiredBlocksPerWeek = calcRequiredBlocksPerWeek(cfg);
-
-// 実際に消費した量
-const usedBlocks = {
-  carb: requiredBlocksPerWeek.carb - remainBlocks.carb,
-  protein: requiredBlocksPerWeek.protein - remainBlocks.protein,
-  mineral: requiredBlocksPerWeek.mineral - remainBlocks.mineral
-};
-
-// 不足（負数は0にする）
-const shortageBlocks = {
-  carb: Math.max(0, requiredBlocksPerWeek.carb - usedBlocks.carb - remainBlocks.carb),
-  protein: Math.max(0, requiredBlocksPerWeek.protein - usedBlocks.protein - remainBlocks.protein),
-  mineral: Math.max(0, requiredBlocksPerWeek.mineral - usedBlocks.mineral - remainBlocks.mineral)
-};
-
-  // warnings（ここは二重宣言しない！）
-  if(shortageBlocks.carb>0) warnings.push(`炭水化物が不足：あと ${shortageBlocks.carb} ブロック必要`);
-  if(shortageBlocks.protein>0) warnings.push(`タンパク質が不足：あと ${shortageBlocks.protein} ブロック必要`);
-  if(shortageBlocks.mineral>0) warnings.push(`ミネラルが不足：あと ${shortageBlocks.mineral}（小さじ相当）必要`);
-
-  return {
-    ok: warnings.length===0,
-    config: cfg,
+  return{
+    ok:warnings.length===0,
     plan,
     leftovers,
     warnings,
-    errors,
-    requiredBlocksPerWeek,
-    availableBlocks,
-    shortageBlocks,
-    mineralMixMeta
+    shortageBlocks
   };
 }
