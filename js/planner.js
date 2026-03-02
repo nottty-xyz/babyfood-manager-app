@@ -447,12 +447,33 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
     mineral: baseAvailable.mineral + newFoodAddedBlocks.mineral
   };
 
-  // ★不足は実欠損
-  const shortageBlocks = {
-    carb: missingSum.carb,
-    protein: missingSum.protein,
-    mineral: missingSum.mineral
-  };
+  // ===== 不足は「実際に使えた量」から計算する =====
+
+// leftovers から在庫合計を再計算
+const sumRemain = (arr) => (arr || []).reduce((s,x)=> s + (x.remainBlocks || 0),0);
+
+const remainBlocks = {
+  carb: sumRemain(leftovers.carb),
+  protein: sumRemain(leftovers.protein),
+  mineral: sumRemain(leftovers.mineral)
+};
+
+// 週の必要量
+const requiredBlocksPerWeek = calcRequiredBlocksPerWeek(cfg);
+
+// 実際に消費した量
+const usedBlocks = {
+  carb: requiredBlocksPerWeek.carb - remainBlocks.carb,
+  protein: requiredBlocksPerWeek.protein - remainBlocks.protein,
+  mineral: requiredBlocksPerWeek.mineral - remainBlocks.mineral
+};
+
+// 不足（負数は0にする）
+const shortageBlocks = {
+  carb: Math.max(0, requiredBlocksPerWeek.carb - usedBlocks.carb - remainBlocks.carb),
+  protein: Math.max(0, requiredBlocksPerWeek.protein - usedBlocks.protein - remainBlocks.protein),
+  mineral: Math.max(0, requiredBlocksPerWeek.mineral - usedBlocks.mineral - remainBlocks.mineral)
+};
 
   // warnings（ここは二重宣言しない！）
   if(shortageBlocks.carb>0) warnings.push(`炭水化物が不足：あと ${shortageBlocks.carb} ブロック必要`);
