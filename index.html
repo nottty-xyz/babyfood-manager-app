@@ -1,403 +1,486 @@
-// js/planner.js
-// v11（v10の Promiseエラー修正：warnings二重宣言を解消）
-//
-// 固定ルール
-// - 炭水化物: 1ブロック=小さじ10
-// - タンパク: 1ブロック=小さじ1
-// - ミネラル単品: 1ブロック=小さじ1
-// - 野菜ミックス: 1ブロック=小さじ3
-// - 果物ミックス: 1ブロック=小さじ2
-//
-// 新食材（全カテゴリ）
-// - 平日1回目のみ投入、初回は必ず小さじ1
-// - その食では同じ新食材を追加で使わない（同カテゴリ他食材で補う）
-// - 2回目以降は在庫から通常消費し、表示は(新2回目以降)
-//
-// ミネラル
-// - ミックスは「チェック在庫のみ」で構成固定（新食材を入れない）
-// - 単品（新食材など）を優先消費するが、単品だけで枠を埋めない（偏り防止）
-//
-// 返却
-// - 各 pick は { name, tsp, blocks } を返す
-// - isNew は返さない（UIに勝手に(新)を付けさせない）
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>離乳食 週次献立プランナー</title>
+  <style>
+    body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:16px;background:#f4f6f8}
+    .card{background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:12px}
+    button{padding:12px 14px;border-radius:12px;border:0;background:#2563eb;color:#fff;font-weight:800}
+    select{padding:10px;border-radius:12px;border:1px solid #e5e7eb}
+    .ghost{background:#fff;border:1px solid #e5e7eb;color:#111827}
+    .row{display:flex;gap:8px;flex-wrap:wrap}
+    hr{border:none;border-top:1px solid #e5e7eb;margin:12px 0}
 
-export const DEFAULT_CONFIG = {
-  phase: "中期",
-  days: ["月","火","水","木","金","土","日"],
-  mealsPerDay: 2,
+    details{background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:10px}
+    summary{cursor:pointer;list-style:none;font-weight:900;display:flex;align-items:center;justify-content:space-between}
+    summary::-webkit-details-marker{display:none}
+    .sumRight{font-weight:700;color:#6b7280;font-size:12px}
+    details[open] summary{margin-bottom:8px}
+    .accBody{padding-top:6px}
 
-  tspPerMeal: {
-    carb: 10,
-    protein: { min: 2, max: 3 },
-    mineral: { min: 4, max: 6 }
-  },
-
-  blocksPerIngredient: 8,
-
-  tspPerBlock: {
-    carb: 10,
-    protein: 1,
-    mineralSingle: 1,
-    vegMix: 3,
-    fruitMix: 2
-  },
-
-  mineralVegBaseTsp: 4,
-
-  mineralSinglesPolicy: {
-    maxSingleShare: 0.5,
-    minMixTsp: 2
-  }
-};
-
-function isWeekdayJP(day){ return ["月","火","水","木","金"].includes(day); }
-function clampInt(n, min, max){ return Math.max(min, Math.min(max, n)); }
-
-function mealTargets(cfg, i){
-  const protein = (i % 2 === 0) ? cfg.tspPerMeal.protein.min : cfg.tspPerMeal.protein.max;
-
-  const base = (cfg.tspPerMeal.mineral.min + cfg.tspPerMeal.mineral.max) / 2; // 5
-  const mineral = clampInt(
-    Math.round(base + ((i % 3) - 1) * 0.5),
-    cfg.tspPerMeal.mineral.min,
-    cfg.tspPerMeal.mineral.max
-  );
-
-  return { carb: cfg.tspPerMeal.carb, protein, mineral };
-}
-
-const FRUITS = new Set([
-  "りんご","いちご","メロン","バナナ","すいか","梨","みかん","桃",
-  "キウイ","ぶどう",
-  "グレープフルーツ","アボカド","ブルーベリー","ラズベリー","パイン"
-]);
-function isFruit(name){ return FRUITS.has(name); }
-
-function makeInventoryFromOverride(list, tspPerBlock, defaultBlocks){
-  return (list || []).map(x => {
-    const blocks = Number.isFinite(+x.blocks) ? +x.blocks : defaultBlocks;
-    return { name: x.name, remainTsp: blocks * tspPerBlock };
-  });
-}
-
-function ensureInventoryItem(invArr, name, tspPerBlock, defaultBlocks){
-  let item = invArr.find(x => x.name === name);
-  if(!item){
-    item = { name, remainTsp: defaultBlocks * tspPerBlock };
-    invArr.unshift(item);
-  }
-  return item;
-}
-
-function allocateTsp(invArr, needTsp, excludeSet){
-  let need = needTsp;
-  const picks = [];
-
-  const candidates = [...invArr]
-    .filter(x => x.remainTsp > 0 && !excludeSet.has(x.name))
-    .sort((a,b) => b.remainTsp - a.remainTsp);
-
-  for(const it of candidates){
-    if(need <= 0) break;
-    const use = Math.min(it.remainTsp, need);
-    if(use > 0){
-      it.remainTsp -= use;
-      need -= use;
-      picks.push({ name: it.name, tsp: use });
+    .chipLabel{
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      margin:6px 10px 6px 0;
+      padding:8px 10px;
+      border:1px solid #e5e7eb;
+      border-radius:12px;
+      background:#fff;
     }
-  }
+    .chipLabel input{ width:18px; height:18px; }
 
-  return { picks, missingTsp: need };
-}
+    .day{margin:12px 0;padding:12px;border:1px solid #e5e7eb;border-radius:14px;background:#fff}
+    .meal{margin-top:10px;padding-top:10px;border-top:1px dashed #e5e7eb}
+    .title{font-weight:900}
+    .sub{color:#6b7280;font-size:12px;margin-top:4px}
+    .badge{display:inline-block;font-size:11px;padding:3px 8px;border:1px solid #e5e7eb;border-radius:999px;margin-right:6px}
+    .warn{background:#fff7ed;border-color:#fed7aa}
+    .ok{background:#ecfdf5;border-color:#bbf7d0}
+    .list{margin:6px 0 0;padding-left:18px}
 
-function buildMineralMix(mineralBaseInv){
-  const vegItems = mineralBaseInv.filter(x => !isFruit(x.name));
-  const fruitItems = mineralBaseInv.filter(x => isFruit(x.name));
-
-  const vegNames = [...vegItems].sort((a,b)=> b.remainTsp - a.remainTsp).slice(0,3).map(x=>x.name);
-  const fruitNames = [...fruitItems].sort((a,b)=> b.remainTsp - a.remainTsp).slice(0,2).map(x=>x.name);
-
-  const vegRemain = vegItems.reduce((s,x)=> s + x.remainTsp, 0);
-  const fruitRemain = fruitItems.reduce((s,x)=> s + x.remainTsp, 0);
-
-  const meta = {
-    vegNames,
-    fruitNames,
-    vegMixName: vegNames.length ? `野菜ミックス(${vegNames.join("+")})` : "野菜ミックス(未選択)",
-    fruitMixName: fruitNames.length ? `果物ミックス(${fruitNames.join("+")})` : "果物ミックス(なし)"
-  };
-
-  return {
-    mix: {
-      veg: { name: meta.vegMixName, remainTsp: vegRemain },
-      fruit: { name: meta.fruitMixName, remainTsp: fruitRemain }
-    },
-    meta
-  };
-}
-
-function allocMineralFromMix(mix, needTsp, vegBaseTsp){
-  let need = needTsp;
-  const picks = [];
-
-  const vegTarget = Math.min(need, vegBaseTsp);
-  const vegUse = Math.min(mix.veg.remainTsp, vegTarget);
-  if(vegUse > 0){
-    mix.veg.remainTsp -= vegUse;
-    need -= vegUse;
-    picks.push({ name: mix.veg.name, tsp: vegUse, mix: "veg" });
-  }
-
-  const fruitUse = Math.min(mix.fruit.remainTsp, need);
-  if(fruitUse > 0){
-    mix.fruit.remainTsp -= fruitUse;
-    need -= fruitUse;
-    picks.push({ name: mix.fruit.name, tsp: fruitUse, mix: "fruit" });
-  }
-
-  if(need > 0){
-    const pools = [
-      { key:"veg", it: mix.veg },
-      { key:"fruit", it: mix.fruit }
-    ].filter(p => p.it.remainTsp > 0).sort((a,b)=> b.it.remainTsp - a.it.remainTsp);
-
-    for(const p of pools){
-      if(need <= 0) break;
-      const use = Math.min(p.it.remainTsp, need);
-      p.it.remainTsp -= use;
-      need -= use;
-
-      const ex = picks.find(x => x.name === p.it.name);
-      if(ex) ex.tsp += use;
-      else picks.push({ name: p.it.name, tsp: use, mix: p.key });
+    .genBar{
+      position: sticky;
+      bottom: 10px;
+      background: rgba(244,246,248,0.95);
+      padding: 10px;
+      border: 1px solid #e5e7eb;
+      border-radius: 14px;
+      backdrop-filter: blur(6px);
+      margin-top: 12px;
     }
-  }
+    .genBarInner{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    .genBtn{flex:1;min-width:220px}
 
-  return { picks, missingTsp: need };
-}
-
-function labelNew(name, isFirst){
-  return isFirst ? `${name}(新初回)` : `${name}(新2回目以降)`;
-}
-
-export function generateWeeklyPlanWithInventory(customConfig = {}){
-  const cfg = { ...DEFAULT_CONFIG, ...customConfig };
-  cfg.mineralSinglesPolicy = { ...DEFAULT_CONFIG.mineralSinglesPolicy, ...(customConfig.mineralSinglesPolicy || {}) };
-
-  const warnings = [];
-  const errors = [];
-
-  const tspPerBlock = cfg.tspPerBlock;
-
-  const inv = {
-    carb: makeInventoryFromOverride(cfg.inventoryOverride?.carb, tspPerBlock.carb, cfg.blocksPerIngredient),
-    protein: makeInventoryFromOverride(cfg.inventoryOverride?.protein, tspPerBlock.protein, cfg.blocksPerIngredient),
-    mineralBase: makeInventoryFromOverride(cfg.inventoryOverride?.mineral, tspPerBlock.mineralSingle, cfg.blocksPerIngredient),
-    mineralSingles: []
-  };
-
-  const rule = cfg.newFoodRule || { enabled:false };
-  const categoryOf = rule.categoryOf || (()=>null);
-  const newQueue = Array.isArray(rule.queue) ? [...rule.queue].slice(0,5) : [];
-  let newPtr = 0;
-
-  const newByCat = { carb:new Set(), protein:new Set(), mineral:new Set() };
-  const newFirstShown = new Set();
-
-  for(const nf of newQueue){
-    const cat = categoryOf(nf);
-    if(cat === "carb"){
-      ensureInventoryItem(inv.carb, nf, tspPerBlock.carb, cfg.blocksPerIngredient);
-      newByCat.carb.add(nf);
-    } else if(cat === "protein"){
-      ensureInventoryItem(inv.protein, nf, tspPerBlock.protein, cfg.blocksPerIngredient);
-      newByCat.protein.add(nf);
-    } else if(cat === "mineral"){
-      ensureInventoryItem(inv.mineralSingles, nf, tspPerBlock.mineralSingle, cfg.blocksPerIngredient);
-      newByCat.mineral.add(nf);
+    .err{
+      white-space:pre-wrap;
+      word-break:break-word;
+      background:#fff1f2;
+      border:1px solid #fecdd3;
+      color:#7f1d1d;
+      padding:10px;
+      border-radius:12px;
+      margin:10px 0;
+      display:none;
     }
-  }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1 style="margin:0 0 10px;">離乳食 週次献立プランナー</h1>
 
-  const { mix: mineralMix, meta: mineralMixMeta } = buildMineralMix(inv.mineralBase);
+    <div id="err" class="err"></div>
 
-  const plan = [];
-  const missingSum = { carbTsp:0, proteinTsp:0, mineralTsp:0 };
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <div>
+        <label>フェーズ：</label>
+        <select id="phase">
+          <option>初期</option>
+          <option selected>中期</option>
+          <option>後期</option>
+          <option>完了期</option>
+        </select>
+      </div>
 
-  let mealIndex = 0;
+      <button id="shareLink" class="ghost" type="button">家族に共有リンク</button>
+      <button id="exportState" class="ghost" type="button">設定エクスポート</button>
+      <button id="importState" class="ghost" type="button">設定インポート</button>
+    </div>
 
-  for(const day of cfg.days){
-    for(let mealNo=1; mealNo<=cfg.mealsPerDay; mealNo++){
+    <hr>
 
-      const targets = mealTargets(cfg, mealIndex);
+    <h2 style="margin:0 0 6px;">在庫（今週使う食材セット）</h2>
+    <div class="sub">チェックした食材だけで1週間を組みます（在庫は基本8ブロック）。</div>
 
-      let need = {
-        carbTsp: targets.carb,
-        proteinTsp: targets.protein,
-        mineralTsp: targets.mineral
+    <div style="display:grid;grid-template-columns:1fr;gap:10px;margin-top:10px;">
+      <details open>
+        <summary><span>炭水化物</span><span class="sumRight" id="countCarb">0件選択</span></summary>
+        <div class="accBody"><div id="invCarb" class="row"></div></div>
+      </details>
+
+      <details>
+        <summary><span>タンパク質</span><span class="sumRight" id="countProtein">0件選択</span></summary>
+        <div class="accBody"><div id="invProtein" class="row"></div></div>
+      </details>
+
+      <details>
+        <summary><span>ミネラル（野菜/果物など）</span><span class="sumRight" id="countMineral">0件選択</span></summary>
+        <div class="accBody"><div id="invMineral" class="row"></div></div>
+      </details>
+    </div>
+
+    <hr>
+
+    <h2 style="margin:0 0 6px;">新食材（平日1回目に小さじ1）</h2>
+    <div class="sub">在庫で選んでいない食材から選べます。チェック順に、月〜金の1回目に1つずつ入ります（最大5つ）。</div>
+
+    <details>
+      <summary><span>新食材候補</span><span class="sumRight" id="countNew">0件選択</span></summary>
+      <div class="accBody"><div id="newFoods" class="row"></div></div>
+    </details>
+
+    <div class="genBar">
+      <div class="genBarInner">
+        <button id="gen" class="genBtn">この設定で1週間生成</button>
+        <div class="sub" id="genHint">在庫をチェックしてから押してね</div>
+      </div>
+    </div>
+
+    <h2 style="margin:14px 0 6px;">結果</h2>
+    <div id="out">設定して「この設定で1週間生成」を押してね</div>
+  </div>
+
+  <script type="module">
+    const errEl = document.getElementById("err");
+    const showErr = (e, label="エラー") => {
+      console.error(e);
+      errEl.style.display = "block";
+      errEl.textContent =
+        label + ":\n" +
+        (e?.message || String(e)) +
+        (e?.stack ? "\n\n" + e.stack : "");
+    };
+
+    window.addEventListener("error", (ev) => showErr(ev?.error || ev, "JS実行エラー"));
+    window.addEventListener("unhandledrejection", (ev) => showErr(ev?.reason || ev, "Promiseエラー"));
+
+    // ★ここが落ちるとチェックボックスが出ないので try/catch
+    let FOOD_MASTER, generateWeeklyPlanWithInventory;
+
+    try{
+      ({ FOOD_MASTER } = await import("./js/foodMaster.js"));
+    }catch(e){
+      showErr(e, "foodMaster.js 読み込み失敗（./js/foodMaster.js）");
+      throw e;
+    }
+
+    try{
+      ({ generateWeeklyPlanWithInventory } = await import("./js/planner.js"));
+    }catch(e){
+      showErr(e, "planner.js 読み込み失敗（./js/planner.js）");
+      throw e;
+    }
+
+    const phaseEl = document.getElementById("phase");
+    const outEl = document.getElementById("out");
+    const genBtn = document.getElementById("gen");
+
+    const invCarbEl = document.getElementById("invCarb");
+    const invProteinEl = document.getElementById("invProtein");
+    const invMineralEl = document.getElementById("invMineral");
+    const newFoodsEl = document.getElementById("newFoods");
+
+    const countCarbEl = document.getElementById("countCarb");
+    const countProteinEl = document.getElementById("countProtein");
+    const countMineralEl = document.getElementById("countMineral");
+    const countNewEl = document.getElementById("countNew");
+
+    const genHintEl = document.getElementById("genHint");
+
+    const shareBtn = document.getElementById("shareLink");
+    const exportBtn = document.getElementById("exportState");
+    const importBtn = document.getElementById("importState");
+
+    const LS_KEY = "babyfood_planner_state_v1";
+
+    const defaultState = () => ({
+      phase: "中期",
+      inv: { carb:{}, protein:{}, mineral:{} },
+      newQueue: []
+    });
+
+    function safeJsonParse(s){
+      try{ return JSON.parse(s); }catch(e){ return null; }
+    }
+
+    function loadState(){
+      // 共有リンク (#state=...) に対応
+      const hash = location.hash || "";
+      const m = hash.match(/state=([^&]+)/);
+      if(m && m[1]){
+        try{
+          const obj = JSON.parse(decodeURIComponent(escape(atob(m[1]))));
+          localStorage.setItem(LS_KEY, JSON.stringify(obj));
+          history.replaceState(null, "", location.pathname + location.search);
+          return { ...defaultState(), ...obj };
+        }catch(e){}
+      }
+
+      const raw = localStorage.getItem(LS_KEY);
+      const obj = raw ? safeJsonParse(raw) : null;
+      return obj ? { ...defaultState(), ...obj } : defaultState();
+    }
+
+    let state = loadState();
+    phaseEl.value = state.phase || "中期";
+
+    function saveState(){
+      state.phase = phaseEl.value;
+      localStorage.setItem(LS_KEY, JSON.stringify(state));
+    }
+
+    function selectedKeys(mapObj){
+      return Object.keys(mapObj || {}).filter(k => mapObj[k]);
+    }
+
+    function categoryOfFactory(phase){
+      const m = FOOD_MASTER?.[phase];
+      if(!m) return () => null;
+      const setCarb = new Set(m.carb || []);
+      const setPro = new Set(m.protein || []);
+      const setMin = new Set(m.mineral || []);
+      return (name)=>{
+        if(setCarb.has(name)) return "carb";
+        if(setPro.has(name)) return "protein";
+        if(setMin.has(name)) return "mineral";
+        return null;
+      };
+    }
+
+    function renderChecklist(container, items, checkedMap, onChange){
+      container.innerHTML = "";
+      (items || []).forEach(name=>{
+        const label = document.createElement("label");
+        label.className = "chipLabel";
+
+        const cb = document.createElement("input");
+        cb.type="checkbox";
+        cb.checked = !!checkedMap[name];
+        cb.addEventListener("change", ()=>{
+          checkedMap[name] = cb.checked;
+          onChange();
+        });
+
+        const span = document.createElement("span");
+        span.textContent = name;
+
+        label.appendChild(cb);
+        label.appendChild(span);
+        container.appendChild(label);
+      });
+    }
+
+    function renderNewFoods(container, items, queue){
+      container.innerHTML = "";
+      (items || []).forEach(name=>{
+        const label = document.createElement("label");
+        label.className = "chipLabel";
+
+        const cb = document.createElement("input");
+        cb.type="checkbox";
+        cb.checked = queue.includes(name);
+
+        cb.addEventListener("change", ()=>{
+          if(cb.checked){
+            if(!queue.includes(name)) queue.push(name);
+          }else{
+            const idx = queue.indexOf(name);
+            if(idx>=0) queue.splice(idx,1);
+          }
+          saveState();
+          updateCounts();
+        });
+
+        const span = document.createElement("span");
+        span.textContent = name;
+
+        label.appendChild(cb);
+        label.appendChild(span);
+        container.appendChild(label);
+      });
+    }
+
+    function rebuildNewCandidates(){
+      const phase = phaseEl.value;
+      const master = FOOD_MASTER[phase];
+
+      const chosen = new Set([
+        ...selectedKeys(state.inv.carb),
+        ...selectedKeys(state.inv.protein),
+        ...selectedKeys(state.inv.mineral)
+      ]);
+
+      const newCandidates = [
+        ...(master.carb||[]).filter(x=>!chosen.has(x)),
+        ...(master.protein||[]).filter(x=>!chosen.has(x)),
+        ...(master.mineral||[]).filter(x=>!chosen.has(x))
+      ];
+
+      state.newQueue = (state.newQueue||[]).filter(x => newCandidates.includes(x));
+      renderNewFoods(newFoodsEl, newCandidates, state.newQueue);
+      saveState();
+      updateCounts();
+    }
+
+    function updateCounts(){
+      const baseCarb = selectedKeys(state.inv?.carb).length;
+      const basePro  = selectedKeys(state.inv?.protein).length;
+      const baseMin  = selectedKeys(state.inv?.mineral).length;
+      const newCount = (state.newQueue||[]).length;
+
+      countCarbEl.textContent = `${baseCarb}件選択`;
+      countProteinEl.textContent = `${basePro}件選択`;
+      countMineralEl.textContent = `${baseMin}件選択`;
+      countNewEl.textContent = `${newCount}件選択`;
+
+      const total = baseCarb + basePro + baseMin;
+      genHintEl.textContent = total ? `在庫チェック済み：合計${total}件（＋新食材は最大5つ）` : "在庫をチェックしてから押してね";
+    }
+
+    function rebuildUI(){
+      try{
+        const phase = phaseEl.value;
+        const master = FOOD_MASTER[phase];
+        if(!master) throw new Error("FOOD_MASTERにこのフェーズがありません: " + phase);
+
+        state.inv ||= { carb:{}, protein:{}, mineral:{} };
+        state.inv.carb ||= {};
+        state.inv.protein ||= {};
+        state.inv.mineral ||= {};
+        state.newQueue ||= [];
+
+        const onInvChange = () => { saveState(); updateCounts(); rebuildNewCandidates(); };
+
+        renderChecklist(invCarbEl, master.carb, state.inv.carb, onInvChange);
+        renderChecklist(invProteinEl, master.protein, state.inv.protein, onInvChange);
+        renderChecklist(invMineralEl, master.mineral, state.inv.mineral, onInvChange);
+
+        rebuildNewCandidates();
+        updateCounts();
+
+        outEl.textContent = "設定して「この設定で1週間生成」を押してね";
+      }catch(e){
+        showErr(e, "UI構築エラー（チェックボックスが出ない原因）");
+      }
+    }
+
+    function esc(s){
+      return String(s ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
+    }
+
+    function renderPlan(result){
+      const warnings = (result.warnings && result.warnings.length) ? result.warnings : [];
+      const plan = result.plan || [];
+
+      const byDay = new Map();
+      for (const p of plan){
+        if(!byDay.has(p.day)) byDay.set(p.day, []);
+        byDay.get(p.day).push(p);
+      }
+
+      let html = "";
+
+      if (warnings.length){
+        html += `<div class="day"><div class="title">Warnings</div><ul class="list">` +
+          warnings.map(w => `<li>${esc(w)}</li>`).join("") +
+          `</ul></div>`;
+      }
+
+      // ★planner.js v10は blocks配列の各要素が {name,tsp,blocks} を返す想定
+      const line = (arr, label) => {
+        const s = (arr||[]).map(x => `${x.name} 小さじ${x.tsp}`).join("、") || "—";
+        return `<div class="sub">${label}: ${esc(s)}</div>`;
       };
 
-      const exclude = { carb:new Set(), protein:new Set(), mineralSingles:new Set() };
-
-      let newLine = null; // { category, name, tsp }
-
-      const doNew =
-        rule.enabled &&
-        isWeekdayJP(day) &&
-        (mealNo === (rule.mealNo || 1)) &&
-        newPtr < newQueue.length;
-
-      if(doNew){
-        const nf = newQueue[newPtr++];
-        const cat = categoryOf(nf);
-
-        if(!cat){
-          warnings.push(`[${day}${mealNo}食] 新食材「${nf}」カテゴリ判定失敗`);
-        } else {
-          const firstTsp = 1; // ★絶対1
-          newLine = { category: cat, name: labelNew(nf, true), tsp: 1 };
-          newFirstShown.add(nf);
-
-          if(cat === "carb"){
-            const it = ensureInventoryItem(inv.carb, nf, tspPerBlock.carb, cfg.blocksPerIngredient);
-            it.remainTsp = Math.max(0, it.remainTsp - firstTsp);
-            need.carbTsp = Math.max(0, need.carbTsp - firstTsp);
-            exclude.carb.add(nf);
-
-          } else if(cat === "protein"){
-            const it = ensureInventoryItem(inv.protein, nf, tspPerBlock.protein, cfg.blocksPerIngredient);
-            it.remainTsp = Math.max(0, it.remainTsp - firstTsp);
-            need.proteinTsp = Math.max(0, need.proteinTsp - firstTsp);
-            exclude.protein.add(nf);
-
-          } else if(cat === "mineral"){
-            const it = ensureInventoryItem(inv.mineralSingles, nf, tspPerBlock.mineralSingle, cfg.blocksPerIngredient);
-            it.remainTsp = Math.max(0, it.remainTsp - firstTsp);
-            need.mineralTsp = Math.max(0, need.mineralTsp - firstTsp);
-            exclude.mineralSingles.add(nf);
-          }
+      for (const [day, meals] of byDay.entries()){
+        html += `<div class="day"><div class="title">${esc(day)}曜日</div>`;
+        for (const m of meals){
+          const okBadge = m.ok ? `<span class="badge ok">OK</span>` : `<span class="badge warn">要確認</span>`;
+          html += `
+            <div class="meal">
+              <div>${okBadge}<b>${esc(m.meal)}回目：</b>${esc(m.menuName || "献立")}</div>
+              <div class="sub">目安：炭水化物${m.targetsTsp.carb} / タンパク${m.targetsTsp.protein} / ミネラル${m.targetsTsp.mineral}（小さじ）</div>
+              ${line(m.blocks.carb, "炭水化物")}
+              ${line(m.blocks.protein, "タンパク")}
+              ${line(m.blocks.mineral, "ミネラル")}
+            </div>
+          `;
         }
+        html += `</div>`;
       }
 
-      // carb
-      const carbAlloc = allocateTsp(inv.carb, need.carbTsp, exclude.carb);
-      const carbPicks = carbAlloc.picks.map(p => {
-        const isNew = newByCat.carb.has(p.name);
-        const nameDisplay = isNew ? labelNew(p.name, !newFirstShown.has(p.name)) : p.name;
-        if(isNew && !newFirstShown.has(p.name)) newFirstShown.add(p.name);
-        return { name: nameDisplay, tsp: p.tsp, blocks: p.tsp / tspPerBlock.carb };
-      });
-
-      // protein
-      const proAlloc = allocateTsp(inv.protein, need.proteinTsp, exclude.protein);
-      const proteinPicks = proAlloc.picks.map(p => {
-        const isNew = newByCat.protein.has(p.name);
-        const nameDisplay = isNew ? labelNew(p.name, !newFirstShown.has(p.name)) : p.name;
-        if(isNew && !newFirstShown.has(p.name)) newFirstShown.add(p.name);
-        return { name: nameDisplay, tsp: p.tsp, blocks: p.tsp / tspPerBlock.protein };
-      });
-
-      // mineral
-      let mineralNeed = need.mineralTsp;
-      const mineralPicks = [];
-
-      const maxSingle = Math.floor(mineralNeed * cfg.mineralSinglesPolicy.maxSingleShare);
-      const minMix = Math.min(cfg.mineralSinglesPolicy.minMixTsp, mineralNeed);
-      const singleAllowed = Math.max(0, Math.min(maxSingle, mineralNeed - minMix));
-
-      if(singleAllowed > 0){
-        const s1 = allocateTsp(inv.mineralSingles, singleAllowed, exclude.mineralSingles);
-        for(const p of s1.picks){
-          const isNew = newByCat.mineral.has(p.name);
-          const nameDisplay = isNew ? labelNew(p.name, !newFirstShown.has(p.name)) : p.name;
-          if(isNew && !newFirstShown.has(p.name)) newFirstShown.add(p.name);
-          mineralPicks.push({ name: nameDisplay, tsp: p.tsp, blocks: p.tsp / tspPerBlock.mineralSingle });
-        }
-        mineralNeed -= (singleAllowed - s1.missingTsp);
-      }
-
-      const mx = allocMineralFromMix(mineralMix, mineralNeed, cfg.mineralVegBaseTsp);
-      for(const p of mx.picks){
-        const blockTsp = (p.mix === "veg") ? tspPerBlock.vegMix : tspPerBlock.fruitMix;
-        mineralPicks.push({ name: p.name, tsp: p.tsp, blocks: p.tsp / blockTsp });
-      }
-      mineralNeed = mx.missingTsp;
-
-      if(mineralNeed > 0){
-        const s2 = allocateTsp(inv.mineralSingles, mineralNeed, exclude.mineralSingles);
-        for(const p of s2.picks){
-          const isNew = newByCat.mineral.has(p.name);
-          const nameDisplay = isNew ? labelNew(p.name, !newFirstShown.has(p.name)) : p.name;
-          if(isNew && !newFirstShown.has(p.name)) newFirstShown.add(p.name);
-          mineralPicks.push({ name: nameDisplay, tsp: p.tsp, blocks: p.tsp / tspPerBlock.mineralSingle });
-        }
-        mineralNeed = s2.missingTsp;
-      }
-
-      // add newLine (tsp=1 fixed)
-      if(newLine){
-        const addPick = (blockTsp) => ({ name: newLine.name, tsp: 1, blocks: 1 / blockTsp });
-        if(newLine.category === "carb") carbPicks.unshift(addPick(tspPerBlock.carb));
-        if(newLine.category === "protein") proteinPicks.unshift(addPick(tspPerBlock.protein));
-        if(newLine.category === "mineral") mineralPicks.unshift(addPick(tspPerBlock.mineralSingle));
-      }
-
-      if(carbAlloc.missingTsp > 0) missingSum.carbTsp += carbAlloc.missingTsp;
-      if(proAlloc.missingTsp > 0) missingSum.proteinTsp += proAlloc.missingTsp;
-      if(mineralNeed > 0) missingSum.mineralTsp += mineralNeed;
-
-      const okThisMeal = (carbAlloc.missingTsp===0 && proAlloc.missingTsp===0 && mineralNeed===0);
-
-      plan.push({
-        day,
-        meal: mealNo,
-        ok: okThisMeal,
-        menuName: "献立",
-        targetsTsp: targets,
-        blocks: { carb: carbPicks, protein: proteinPicks, mineral: mineralPicks }
-      });
-
-      mealIndex++;
+      outEl.innerHTML = html;
     }
-  }
 
-  const leftovers = {
-    carb: inv.carb.filter(x=>x.remainTsp>0).map(x=>({
-      name:x.name, remainTsp:x.remainTsp, remainBlocks:x.remainTsp / tspPerBlock.carb
-    })),
-    protein: inv.protein.filter(x=>x.remainTsp>0).map(x=>({
-      name:x.name, remainTsp:x.remainTsp, remainBlocks:x.remainTsp / tspPerBlock.protein
-    })),
-    mineral: [
-      ...(mineralMix.veg.remainTsp>0 ? [{
-        name:mineralMix.veg.name, remainTsp:mineralMix.veg.remainTsp, remainBlocks:mineralMix.veg.remainTsp / tspPerBlock.vegMix
-      }] : []),
-      ...(mineralMix.fruit.remainTsp>0 ? [{
-        name:mineralMix.fruit.name, remainTsp:mineralMix.fruit.remainTsp, remainBlocks:mineralMix.fruit.remainTsp / tspPerBlock.fruitMix
-      }] : []),
-      ...inv.mineralSingles.filter(x=>x.remainTsp>0).map(x=>({
-        name:`${x.name}(単品)`, remainTsp:x.remainTsp, remainBlocks:x.remainTsp / tspPerBlock.mineralSingle
-      }))
-    ]
-  };
+    genBtn.addEventListener("click", ()=>{
+      try{
+        const phase = phaseEl.value;
+        const categoryOf = categoryOfFactory(phase);
 
-  const shortageBlocks = {
-    carbTsp: missingSum.carbTsp,
-    proteinTsp: missingSum.proteinTsp,
-    mineralTsp: missingSum.mineralTsp
-  };
+        const invOverride = {
+          carb: selectedKeys(state.inv.carb).map(name=>({name, blocks:8})),
+          protein: selectedKeys(state.inv.protein).map(name=>({name, blocks:8})),
+          mineral: selectedKeys(state.inv.mineral).map(name=>({name, blocks:8}))
+        };
 
-  if(shortageBlocks.carbTsp>0) warnings.push(`炭水化物が不足：あと 小さじ${shortageBlocks.carbTsp}`);
-  if(shortageBlocks.proteinTsp>0) warnings.push(`タンパク質が不足：あと 小さじ${shortageBlocks.proteinTsp}`);
-  if(shortageBlocks.mineralTsp>0) warnings.push(`ミネラルが不足：あと 小さじ${shortageBlocks.mineralTsp}`);
+        const result = generateWeeklyPlanWithInventory({
+          phase,
+          inventoryOverride: invOverride,
+          newFoodRule: {
+            enabled: true,
+            weekdayOnly: true,
+            mealNo: 1,
+            tsp: 1,
+            queue: state.newQueue,
+            categoryOf
+          }
+        });
 
-  return {
-    ok: warnings.length===0,
-    config: cfg,
-    plan,
-    leftovers,
-    warnings,
-    errors,
-    shortageBlocks,
-    mineralMixMeta: mineralMixMeta
-  };
-}
+        renderPlan(result);
+      }catch(e){
+        showErr(e, "生成エラー（ボタン押下）");
+      }
+    });
+
+    // 共有/エクスポート/インポート
+    shareBtn.addEventListener("click", async ()=>{
+      try{
+        const token = btoa(unescape(encodeURIComponent(JSON.stringify(state))));
+        const url = location.origin + location.pathname + "#state=" + token;
+        if(navigator.share){
+          await navigator.share({ title:"離乳食プラン設定", url });
+        }else{
+          await navigator.clipboard.writeText(url);
+          alert("共有リンクをコピーしました");
+        }
+      }catch(e){
+        showErr(e, "共有リンク作成エラー");
+      }
+    });
+
+    exportBtn.addEventListener("click", async ()=>{
+      try{
+        const json = JSON.stringify(state, null, 2);
+        await navigator.clipboard.writeText(json);
+        alert("設定JSONをコピーしました");
+      }catch(e){
+        showErr(e, "エクスポート失敗");
+      }
+    });
+
+    importBtn.addEventListener("click", ()=>{
+      try{
+        const txt = prompt("設定JSONを貼り付けてOKを押してね");
+        if(!txt) return;
+        const obj = JSON.parse(txt);
+        state = { ...defaultState(), ...obj };
+        phaseEl.value = state.phase || "中期";
+        saveState();
+        rebuildUI();
+        alert("インポートしました");
+      }catch(e){
+        showErr(e, "インポート失敗");
+      }
+    });
+
+    phaseEl.addEventListener("change", ()=>{
+      saveState();
+      rebuildUI();
+    });
+
+    rebuildUI();
+  </script>
+</body>
+</html>
