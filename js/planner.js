@@ -421,36 +421,32 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
     }
   }
 
-  const leftovers = {
-    carb: inv.carb.filter(x=>x.remainTsp>0).map(x=>({
-      name:x.name, remainTsp:x.remainTsp, remainBlocks:x.remainTsp / tspPerBlock.carb
-    })),
-    protein: inv.protein.filter(x=>x.remainTsp>0).map(x=>({
-      name:x.name, remainTsp:x.remainTsp, remainBlocks:x.remainTsp / tspPerBlock.protein
-    })),
+    const leftovers = {
+    carb: inv.carb.map(x=>({
+      name: x.name,
+      remainBlocks: x.remainTsp / tspPerBlock.carb
+    })).filter(x=>x.remainBlocks > 0),
+
+    protein: inv.protein.map(x=>({
+      name: x.name,
+      remainBlocks: x.remainTsp / tspPerBlock.protein
+    })).filter(x=>x.remainBlocks > 0),
+
     mineral: [
-      ...(mineralMix.veg.remainTsp>0 ? [{
-        name:mineralMix.veg.name, remainTsp:mineralMix.veg.remainTsp, remainBlocks:mineralMix.veg.remainTsp / tspPerBlock.vegMix
-      }] : []),
-      ...(mineralMix.fruit.remainTsp>0 ? [{
-        name:mineralMix.fruit.name, remainTsp:mineralMix.fruit.remainTsp, remainBlocks:mineralMix.fruit.remainTsp / tspPerBlock.fruitMix
-      }] : []),
-      ...inv.mineralSingles.filter(x=>x.remainTsp>0).map(x=>({
-        name:`${x.name}(単品)`, remainTsp:x.remainTsp, remainBlocks:x.remainTsp / tspPerBlock.mineralSingle
+      {
+        name: mineralMix.veg.name,
+        remainBlocks: mineralMix.veg.remainTsp / tspPerBlock.vegMix
+      },
+      {
+        name: mineralMix.fruit.name,
+        remainBlocks: mineralMix.fruit.remainTsp / tspPerBlock.fruitMix
+      },
+      ...inv.mineralSingles.map(x=>({
+        name: x.name,
+        remainBlocks: x.remainTsp / tspPerBlock.mineralSingle
       }))
-    ]
+    ].filter(x=>x.remainBlocks > 0)
   };
-
-  const shortageBlocks = {
-    carbTsp: missingSum.carbTsp,
-    proteinTsp: missingSum.proteinTsp,
-    mineralTsp: missingSum.mineralTsp
-  };
-
-  if(shortageBlocks.carbTsp>0) warnings.push(`炭水化物が不足：あと 小さじ${shortageBlocks.carbTsp}`);
-  if(shortageBlocks.proteinTsp>0) warnings.push(`タンパク質が不足：あと 小さじ${shortageBlocks.proteinTsp}`);
-  if(shortageBlocks.mineralTsp>0) warnings.push(`ミネラルが不足：あと 小さじ${shortageBlocks.mineralTsp}`);
-
   return {
     ok: warnings.length===0,
     config: cfg,
