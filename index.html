@@ -102,130 +102,224 @@
       <div class="muted" style="margin-top:6px;">共有データ（読み取り専用）</div>
       <textarea id="shareBox" readonly></textarea>
     </details>
+  <hr style="border:none;border-top:1px solid #e5e7eb;margin:12px 0;">
 
+  <h2>在庫（今週使う食材セット）</h2>
+  <div class="sub">チェックした食材だけで1週間を組みます（在庫は基本8ブロック）。</div>
+
+  <div style="display:grid;grid-template-columns:1fr;gap:10px;margin-top:10px;">
+    <div class="day">
+      <div class="title">炭水化物</div>
+      <div id="invCarb"></div>
+    </div>
+    <div class="day">
+      <div class="title">タンパク質</div>
+      <div id="invProtein"></div>
+    </div>
+    <div class="day">
+      <div class="title">ミネラル（野菜/果物など）</div>
+      <div id="invMineral"></div>
+    </div>
+  </div>
+
+  <h2 style="margin-top:14px;">新食材（平日1回目に小さじ1）</h2>
+  <div class="sub">チェックした順に、月〜金の1回目に1つずつ入ります。</div>
+  <div class="day">
+    <div id="newFoods"></div>
+  </div>
+
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+    <button id="shareLink" class="ghost" type="button">家族に共有リンク</button>
+    <button id="exportState" class="ghost" type="button">設定エクスポート</button>
+    <button id="importState" class="ghost" type="button">設定インポート</button>
+  </div>
     <h2 style="margin-top:14px;">結果</h2>
     <div id="out">まだ生成していません</div>
   </div>
 
 <script type="module">
   import { FOOD_MASTER } from "./js/foodMaster.js";
-  const mod = await import("./js/planner.js");
-  const generateWeeklyPlan = mod.generateWeeklyPlan;
+  import { generateWeeklyPlanWithInventory } from "./js/planner.js";
 
   const phaseEl = document.getElementById("phase");
-  const carbBlockEl = document.getElementById("carbBlock");
-  const blocksPerIngEl = document.getElementById("blocksPerIng");
   const outEl = document.getElementById("out");
-  const shareBox = document.getElementById("shareBox");
+  const genBtn = document.getElementById("gen");
 
-  const invCarb = document.getElementById("invCarb");
-  const invProtein = document.getElementById("invProtein");
-  const invMineral = document.getElementById("invMineral");
+  const invCarbEl = document.getElementById("invCarb");
+  const invProteinEl = document.getElementById("invProtein");
+  const invMineralEl = document.getElementById("invMineral");
+  const newFoodsEl = document.getElementById("newFoods");
 
-  const esc = (s)=>String(s??"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
+  const shareBtn = document.getElementById("shareLink");
+  const exportBtn = document.getElementById("exportState");
+  const importBtn = document.getElementById("importState");
 
-  function getStateFromUI(){
-    const phase = phaseEl.value;
-    const carbBlock = parseInt(carbBlockEl.value,10);
-    const blocksPerIngredient = Math.max(1, parseInt(blocksPerIngEl.value||"8",10));
+  const LS_KEY = "babyfood_planner_state_v1";
 
-    const readInv = (root) => {
-      const use = [];
-      const isNew = [];
-      root.querySelectorAll("[data-food]").forEach(row=>{
-        const name = row.dataset.food;
-        const useCb = row.querySelector('input[data-kind="use"]');
-        const newCb = row.querySelector('input[data-kind="new"]');
-        if (useCb?.checked) use.push(name);
-        if (newCb?.checked) isNew.push(name);
-      });
-      return { use, isNew };
-    };
+  function esc(s){
+    return String(s ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
+  }
 
-    const carb = readInv(invCarb);
-    const protein = readInv(invProtein);
-    const mineral = readInv(invMineral);
+  function b64EncodeUnicode(obj){
+    const json = JSON.stringify(obj);
+    return btoa(unescape(encodeURIComponent(json)));
+  }
+  function b64DecodeUnicode(s){
+    const json = decodeURIComponent(escape(atob(s)));
+    return JSON.parse(json);
+  }
 
-    // 新食材は「使う」に入ってないと意味ないので補正
-    const fixNew = (cat) => cat.isNew.filter(n => cat.use.includes(n));
-    carb.isNew = fixNew(carb);
-    protein.isNew = fixNew(protein);
-    mineral.isNew = fixNew(mineral);
-
+  function defaultState(){
     return {
-      phase,
-      blocksPerIngredient,
-      blockSizeTsp: { carb: carbBlock, protein: 1, mineral: 1 },
-      fixedFoods: { carb: carb.use, protein: protein.use, mineral: mineral.use },
-      newFoods: { carb: carb.isNew, protein: protein.isNew, mineral: mineral.isNew }
+      phase: "中期",
+      // 在庫：チェックしたものだけ使う（値は boolean）
+      inv: { carb:{}, protein:{}, mineral:{} },
+      // 新食材：チェック順（配列）
+      newQueue: []
     };
   }
 
-  function setStateToUI(state){
-    if (!state) return;
-    if (state.phase) phaseEl.value = state.phase;
-    if (state.blockSizeTsp?.carb) carbBlockEl.value = String(state.blockSizeTsp.carb);
-    if (state.blocksPerIngredient) blocksPerIngEl.value = String(state.blocksPerIngredient);
-
-    // いったん再描画してから反映
-    renderInventoryLists();
-
-    const applyInv = (root, useList, newList) => {
-      const useSet = new Set(useList||[]);
-      const newSet = new Set(newList||[]);
-      root.querySelectorAll("[data-food]").forEach(row=>{
-        const name = row.dataset.food;
-        const useCb = row.querySelector('input[data-kind="use"]');
-        const newCb = row.querySelector('input[data-kind="new"]');
-        if (useCb) useCb.checked = useSet.has(name);
-        if (newCb) newCb.checked = newSet.has(name);
-      });
-    };
-
-    applyInv(invCarb, state.fixedFoods?.carb, state.newFoods?.carb);
-    applyInv(invProtein, state.fixedFoods?.protein, state.newFoods?.protein);
-    applyInv(invMineral, state.fixedFoods?.mineral, state.newFoods?.mineral);
+  function loadState(){
+    // 共有リンク（#state=...）があれば優先
+    const hash = location.hash || "";
+    const m = hash.match(/state=([^&]+)/);
+    if (m && m[1]) {
+      try {
+        const imported = b64DecodeUnicode(m[1]);
+        localStorage.setItem(LS_KEY, JSON.stringify(imported));
+        // hashは消してOK（好み）
+        history.replaceState(null, "", location.pathname + location.search);
+        return imported;
+      } catch (e) {}
+    }
+    try{
+      const raw = localStorage.getItem(LS_KEY);
+      if(!raw) return defaultState();
+      return { ...defaultState(), ...JSON.parse(raw) };
+    }catch(e){
+      return defaultState();
+    }
   }
 
-  function foodRow(name){
-    const div = document.createElement("div");
-    div.className = "foodItem";
-    div.dataset.food = name;
-    div.innerHTML = `
-      <div class="foodLeft">
-        <label style="display:flex;gap:8px;align-items:center;">
-          <input type="checkbox" data-kind="use">
-          <span>${esc(name)}</span>
-        </label>
-      </div>
-      <div class="row">
-        <span class="pill">新</span>
-        <input type="checkbox" data-kind="new" aria-label="新食材">
-      </div>
-    `;
-    // 「新」を押したら自動で「使う」もON
-    const useCb = div.querySelector('input[data-kind="use"]');
-    const newCb = div.querySelector('input[data-kind="new"]');
-    newCb.addEventListener("change", ()=>{
-      if (newCb.checked) useCb.checked = true;
-    });
-    return div;
+  function saveState(){
+    localStorage.setItem(LS_KEY, JSON.stringify(state));
   }
 
-  function renderInventoryLists(){
-    const phase = phaseEl.value;
+  let state = loadState();
+  phaseEl.value = state.phase || "中期";
+
+  function categoryOfFactory(phase){
     const m = FOOD_MASTER[phase];
-
-    invCarb.innerHTML = "";
-    invProtein.innerHTML = "";
-    invMineral.innerHTML = "";
-
-    (m?.carb||[]).forEach(n => invCarb.appendChild(foodRow(n)));
-    (m?.protein||[]).forEach(n => invProtein.appendChild(foodRow(n)));
-    (m?.mineral||[]).forEach(n => invMineral.appendChild(foodRow(n)));
+    const setCarb = new Set(m.carb);
+    const setPro = new Set(m.protein);
+    const setMin = new Set(m.mineral);
+    return (name)=>{
+      if(setCarb.has(name)) return "carb";
+      if(setPro.has(name)) return "protein";
+      if(setMin.has(name)) return "mineral";
+      return null;
+    };
   }
 
-  function render(result){
+  function renderChecklist(container, items, checkedMap, onChange){
+    container.innerHTML = "";
+    items.forEach(name=>{
+      const id = `${container.id}_${name}`;
+      const label = document.createElement("label");
+      label.style.display="inline-flex";
+      label.style.alignItems="center";
+      label.style.gap="8px";
+      label.style.margin="6px 10px 6px 0";
+      label.style.padding="8px 10px";
+      label.style.border="1px solid #e5e7eb";
+      label.style.borderRadius="12px";
+      label.style.background="#fff";
+
+      const cb = document.createElement("input");
+      cb.type="checkbox";
+      cb.checked = !!checkedMap[name];
+      cb.addEventListener("change", ()=>{
+        checkedMap[name] = cb.checked;
+        onChange();
+      });
+
+      const span = document.createElement("span");
+      span.textContent = name;
+
+      label.appendChild(cb);
+      label.appendChild(span);
+      container.appendChild(label);
+    });
+  }
+
+  function renderNewFoods(container, items, queue){
+    container.innerHTML = "";
+    items.forEach(name=>{
+      const label = document.createElement("label");
+      label.style.display="inline-flex";
+      label.style.alignItems="center";
+      label.style.gap="8px";
+      label.style.margin="6px 10px 6px 0";
+      label.style.padding="8px 10px";
+      label.style.border="1px solid #e5e7eb";
+      label.style.borderRadius="12px";
+      label.style.background="#fff";
+
+      const cb = document.createElement("input");
+      cb.type="checkbox";
+      cb.checked = queue.includes(name);
+
+      cb.addEventListener("change", ()=>{
+        if(cb.checked){
+          if(!queue.includes(name)) queue.push(name);
+        }else{
+          const idx = queue.indexOf(name);
+          if(idx>=0) queue.splice(idx,1);
+        }
+        saveState();
+      });
+
+      const span = document.createElement("span");
+      span.textContent = name;
+
+      label.appendChild(cb);
+      label.appendChild(span);
+      container.appendChild(label);
+    });
+  }
+
+  function rebuildUI(){
+    const phase = phaseEl.value;
+    const master = FOOD_MASTER[phase];
+
+    // stateの枠がなければ作る
+    state.inv ||= { carb:{}, protein:{}, mineral:{} };
+    state.inv.carb ||= {};
+    state.inv.protein ||= {};
+    state.inv.mineral ||= {};
+    state.newQueue ||= [];
+
+    renderChecklist(invCarbEl, master.carb, state.inv.carb, ()=>{ saveState(); });
+    renderChecklist(invProteinEl, master.protein, state.inv.protein, ()=>{ saveState(); });
+    renderChecklist(invMineralEl, master.mineral, state.inv.mineral, ()=>{ saveState(); });
+
+    // 新食材候補は「在庫で選んでないもの」から（増やしすぎ防止）
+    const chosen = new Set([
+      ...Object.keys(state.inv.carb).filter(k=>state.inv.carb[k]),
+      ...Object.keys(state.inv.protein).filter(k=>state.inv.protein[k]),
+      ...Object.keys(state.inv.mineral).filter(k=>state.inv.mineral[k])
+    ]);
+    const newCandidates = [
+      ...master.carb.filter(x=>!chosen.has(x)),
+      ...master.protein.filter(x=>!chosen.has(x)),
+      ...master.mineral.filter(x=>!chosen.has(x))
+    ];
+    renderNewFoods(newFoodsEl, newCandidates, state.newQueue);
+
+    saveState();
+  }
+
+  function renderPlan(result){
     const warnings = (result.warnings && result.warnings.length) ? result.warnings : [];
     const plan = result.plan || [];
 
@@ -247,20 +341,16 @@
       html += `<div class="day"><div class="title">${esc(day)}曜日</div>`;
       for (const m of meals){
         const okBadge = m.ok ? `<span class="badge ok">OK</span>` : `<span class="badge warn">要確認</span>`;
+        const newBadge = m.newFood ? `<span class="badge warn">新:${esc(m.newFood)} 小さじ1</span>` : "";
 
         const toLine = (arr, label) => {
-          const items = (arr || []).map(x => `${x.name}×${x.blocks}ブロック`).join("、") || "—";
+          const items = (arr || []).map(x => `${x.name}×${x.blocks}ブロック${x.isNew ? "(新)" : ""}`).join("、") || "—";
           return `<div class="sub">${label}: ${esc(items)}</div>`;
         };
 
-        const newLine = (m.newUsed && m.newUsed.length)
-          ? `<div class="sub"><b>新食材</b>: ${esc(m.newUsed.map(x=>`${x.category}:${x.name}×${x.blocks}`).join("、"))}</div>`
-          : "";
-
         html += `
           <div class="meal">
-            <div>${okBadge}<b>${esc(m.meal)}回目：</b>${esc(m.menuName)}</div>
-            ${newLine}
+            <div>${okBadge}${newBadge}<b>${esc(m.meal)}回目：</b>${esc(m.menuName)}</div>
             <div class="sub">目安：炭水化物${m.targetsTsp.carb} / タンパク${m.targetsTsp.protein} / ミネラル${m.targetsTsp.mineral}（小さじ）</div>
             ${toLine(m.blocks.carb, "炭水化物")}
             ${toLine(m.blocks.protein, "タンパク")}
@@ -271,133 +361,89 @@
       html += `</div>`;
     }
 
-    // leftovers
-    html += `<div class="day"><div class="title">余り在庫</div>`;
-    const lf = result.leftovers || {};
-    const lfLine = (k, label) => {
-      const arr = lf[k] || [];
-      const s = arr.length ? arr.map(x => `${x.name}(${x.remainBlocks})`).join("、") : "なし";
-      return `<div class="sub">${label}: ${esc(s)}</div>`;
-    };
-    html += lfLine("carb","炭水化物");
-    html += lfLine("protein","タンパク");
-    html += lfLine("mineral","ミネラル");
-    html += `</div>`;
-
     outEl.innerHTML = html;
   }
 
-  function makeSharePayload(){
-    const state = getStateFromUI();
-    return state;
-  }
-
-  function encodeShare(obj){
-    const json = JSON.stringify(obj);
-    // UTF-8 safe base64
-    const b64 = btoa(unescape(encodeURIComponent(json)));
-    return b64;
-  }
-
-  function decodeShare(b64){
-    const json = decodeURIComponent(escape(atob(b64)));
-    return JSON.parse(json);
-  }
-
-  function applyShareFromURL(){
-    const h = location.hash || "";
-    const m = h.match(/^#data=(.+)$/);
-    if (!m) return;
-    try{
-      const payload = decodeShare(m[1]);
-      setStateToUI(payload);
-      shareBox.value = JSON.stringify(payload, null, 2);
-    }catch(e){
-      console.error(e);
-    }
-  }
-
-  // ボタン類
-  document.getElementById("gen").addEventListener("click", ()=>{
-    const state = getStateFromUI();
-    const result = generateWeeklyPlan(state);
-    render(result);
+  phaseEl.addEventListener("change", ()=>{
+    state.phase = phaseEl.value;
+    saveState();
+    rebuildUI();
   });
 
-  document.getElementById("share").addEventListener("click", async ()=>{
-    const payload = makeSharePayload();
-    const b64 = encodeShare(payload);
-    const url = location.origin + location.pathname + "#data=" + b64;
-    shareBox.value = JSON.stringify(payload, null, 2);
+  genBtn.addEventListener("click", ()=>{
+    const phase = phaseEl.value;
+    const master = FOOD_MASTER[phase];
+    const categoryOf = categoryOfFactory(phase);
+
+    // 在庫オーバーライドを作成（チェックされたものだけ blocks=8）
+    const invOverride = {
+      carb: Object.keys(state.inv.carb).filter(k=>state.inv.carb[k]).map(name=>({name, blocks:8})),
+      protein: Object.keys(state.inv.protein).filter(k=>state.inv.protein[k]).map(name=>({name, blocks:8})),
+      mineral: Object.keys(state.inv.mineral).filter(k=>state.inv.mineral[k]).map(name=>({name, blocks:8}))
+    };
+
+    const result = generateWeeklyPlanWithInventory({
+      phase,
+      inventoryOverride: invOverride,
+      newFoodRule: {
+        enabled: true,
+        weekdayOnly: true,
+        mealNo: 1,
+        tsp: 1,
+        queue: state.newQueue,
+        categoryOf
+      }
+    });
+
+    renderPlan(result);
+  });
+
+  shareBtn.addEventListener("click", async ()=>{
+    const payload = state;
+    const token = b64EncodeUnicode(payload);
+    const url = location.origin + location.pathname + "#state=" + token;
 
     try{
-      await navigator.clipboard.writeText(url);
-      alert("共有リンクをコピーしました");
-    }catch{
+      if (navigator.share) {
+        await navigator.share({ title:"離乳食プラン設定", url });
+      } else {
+        await navigator.clipboard.writeText(url);
+        alert("共有リンクをコピーしました");
+      }
+    }catch(e){
+      // clipboardが無理でもフォールバック
       prompt("このリンクをコピーして家族に送ってね", url);
     }
   });
 
-  document.getElementById("copyJson").addEventListener("click", async ()=>{
-    const payload = makeSharePayload();
-    const txt = JSON.stringify(payload, null, 2);
-    shareBox.value = txt;
+  exportBtn.addEventListener("click", async ()=>{
+    const json = JSON.stringify(state, null, 2);
     try{
-      await navigator.clipboard.writeText(txt);
-      alert("JSONをコピーしました");
-    }catch{
-      prompt("このJSONをコピーして送ってね", txt);
+      await navigator.clipboard.writeText(json);
+      alert("設定JSONをコピーしました");
+    }catch(e){
+      prompt("このJSONをコピーして保存してね", json);
     }
   });
 
-  document.getElementById("clearAll").addEventListener("click", ()=>{
-    document.querySelectorAll('#invCarb input[type="checkbox"], #invProtein input[type="checkbox"], #invMineral input[type="checkbox"]').forEach(cb=>cb.checked=false);
-  });
-
-  // 最低限自動選択：必要量に対して最小種類数だけ use をON（newは触らない）
-  document.getElementById("selectMinimum").addEventListener("click", ()=>{
-    const phase = phaseEl.value;
-    const m = FOOD_MASTER[phase];
-    const blocksPerIngredient = Math.max(1, parseInt(blocksPerIngEl.value||"8",10));
-    const carbBlock = parseInt(carbBlockEl.value,10);
-
-    const tmp = generateWeeklyPlan({
-      phase,
-      blocksPerIngredient,
-      blockSizeTsp: { carb: carbBlock, protein: 1, mineral: 1 },
-      fixedFoods: { carb: [], protein: [], mineral: [] }, // 空にして必要種類数だけ計算
-      dryRunOnlyNeedKinds: true
-    });
-
-    // 乾式の返りで needKinds を使う
-    const need = tmp.needKinds || { carb: 2, protein: 2, mineral: 3 };
-
-    const pickFirstN = (root, n) => {
-      let count = 0;
-      root.querySelectorAll("[data-food]").forEach(row=>{
-        const useCb = row.querySelector('input[data-kind="use"]');
-        if (!useCb) return;
-        if (count < n) { useCb.checked = true; count++; }
-      });
-    };
-
-    // まずクリアしてから
-    document.querySelectorAll('#invCarb input[data-kind="use"], #invProtein input[data-kind="use"], #invMineral input[data-kind="use"]').forEach(cb=>cb.checked=false);
-
-    pickFirstN(invCarb, need.carb);
-    pickFirstN(invProtein, need.protein);
-    pickFirstN(invMineral, need.mineral);
-  });
-
-  // フェーズ変更でリスト再描画
-  phaseEl.addEventListener("change", ()=>{
-    renderInventoryLists();
-    applyShareFromURL(); // 共有URLがあるなら再適用（フェーズ切替後のズレ対策）
+  importBtn.addEventListener("click", ()=>{
+    const txt = prompt("設定JSONを貼り付けてOKを押してね");
+    if(!txt) return;
+    try{
+      const obj = JSON.parse(txt);
+      state = { ...defaultState(), ...obj };
+      phaseEl.value = state.phase || "中期";
+      saveState();
+      rebuildUI();
+      alert("インポートしました");
+    }catch(e){
+      alert("JSONが読めませんでした");
+    }
   });
 
   // 初期描画
-  renderInventoryLists();
-  applyShareFromURL();
+  rebuildUI();
+  outEl.textContent = "設定して「1週間生成」を押してね";
 </script>
 </body>
 </html>
