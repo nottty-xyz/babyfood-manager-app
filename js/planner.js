@@ -1,67 +1,57 @@
 // js/planner.js
-import { FOOD_MASTER } from "./foodMaster.js";
+// 完全ロジック版：在庫指定で1週間(7日×2回食)を組む
+// + 平日1回目だけ「新食材 小さじ1」を差し込む（カテゴリ内で差し引き）
 
-/**
- * 重要：
- * - ブロック在庫: 各食材 8ブロック
- * - blockSizeTsp: 1ブロックが何小さじか（カテゴリごとに設定）
- *   炭水化物を 1ブロック=小さじ10 にすると、食材種類数が爆増せず現実的に回ります。
- */
 export const DEFAULT_CONFIG = {
   phase: "中期",
-  days: ["月", "火", "水", "木", "金", "土", "日"],
+  days: ["月","火","水","木","金","土","日"],
   mealsPerDay: 2,
 
-  // 1食あたり小さじターゲット
+  // 1食あたり小さじ（目安）
   tspPerMeal: {
     carb: 10,
     protein: { min: 2, max: 3 },
     mineral: { min: 4, max: 6 }
   },
 
-  // 1ブロックが何小さじか
+  // 1ブロックが何小さじか（炭水化物は10推奨）
   blockSizeTsp: {
-    carb: 10,      // ←おすすめ（主食キューブ）
+    carb: 10,
     protein: 1,
     mineral: 1
   },
 
-  // 各食材の在庫ブロック数（小さじ1×8ブロック、など）
   blocksPerIngredient: 8,
 
-  // 1食で使う食材の「種類」上限（増やしすぎ防止）
-  // ※足りないと割当不能になるので、状況に応じて自動で緩めるオプションもあり
   maxKindsPerMeal: {
     carb: 2,
     protein: 2,
     mineral: 3
   },
 
-  // 割当できないとき、種類上限を自動で緩める（true推奨）
   autoRelaxMaxKinds: true,
+  avoidRepeat: true,
 
-  // 週内で同じ食材を連発しない軽いペナルティ
-  avoidRepeat: true
+  // UIから渡される在庫
+  // inventoryOverride: { carb:[{name,blocks}], protein:[...], mineral:[...] }
+
+  // UIから渡される新食材ルール
+  // newFoodRule: { enabled, weekdayOnly, mealNo, tsp, queue:[...], categoryOf:(name)=>cat }
 };
 
-/* ---------- ユーティリティ ---------- */
+function clone(obj){ return JSON.parse(JSON.stringify(obj)); }
 
-function clone(obj) {
-  return JSON.parse(JSON.stringify(obj));
-}
-
-function deepMerge(base, override) {
-  if (!override) return clone(base);
+function deepMerge(base, override){
+  if(!override) return clone(base);
   const out = clone(base);
-  const stack = [{ a: out, b: override }];
-  while (stack.length) {
-    const { a, b } = stack.pop();
-    for (const k of Object.keys(b)) {
-      const bv = b[k];
-      const av = a[k];
-      if (bv && typeof bv === "object" && !Array.isArray(bv) && av && typeof av === "object" && !Array.isArray(av)) {
-        stack.push({ a: av, b: bv });
-      } else {
+  const stack = [{a: out, b: override}];
+  while(stack.length){
+    const {a,b} = stack.pop();
+    for(const k of Object.keys(b)){
+      const bv = b[k], av = a[k];
+      if(bv && typeof bv==="object" && !Array.isArray(bv) && av && typeof av==="object" && !Array.isArray(av)){
+        stack.push({a: av, b: bv});
+      }else{
         a[k] = bv;
       }
     }
@@ -69,605 +59,195 @@ function deepMerge(base, override) {
   return out;
 }
 
-function clampInt(n, min, max) {
-  return Math.max(min, Math.min(max, n));
-}
+function clampInt(n,min,max){ return Math.max(min, Math.min(max,n)); }
+function tspToBlocks(tsp, blockSize){ return Math.ceil(tsp / blockSize); }
 
-function tspToBlocks(tsp, blockSizeTsp) {
-  return Math.ceil(tsp / blockSizeTsp);
-}
+function totalMeals(cfg){ return cfg.days.length * cfg.mealsPerDay; }
 
-function totalMeals(config) {
-  return config.days.length * config.mealsPerDay;
-}
-
-/**
- * 1週間の各食に対して protein/mineral を範囲内で揺らす
- * 目的：在庫を使い切りやすくする & 単調になりにくい
- */
-function mealTargets(config, mealIndex) {
-  const protein = (mealIndex % 2 === 0) ? config.tspPerMeal.protein.min : config.tspPerMeal.protein.max;
-  const mineralBase = (config.tspPerMeal.mineral.min + config.tspPerMeal.mineral.max) / 2; // 5
+function mealTargets(cfg, mealIndex){
+  const protein = (mealIndex % 2 === 0) ? cfg.tspPerMeal.protein.min : cfg.tspPerMeal.protein.max;
+  const mineralBase = (cfg.tspPerMeal.mineral.min + cfg.tspPerMeal.mineral.max) / 2; // 5
   const mineral = clampInt(
     Math.round(mineralBase + ((mealIndex % 3) - 1) * 0.5),
-    config.tspPerMeal.mineral.min,
-    config.tspPerMeal.mineral.max
+    cfg.tspPerMeal.mineral.min,
+    cfg.tspPerMeal.mineral.max
   );
-  return { carb: config.tspPerMeal.carb, protein, mineral };
+  return { carb: cfg.tspPerMeal.carb, protein, mineral };
 }
 
-function makeInventory(names, blocksPerIngredient) {
-  return names.map(name => ({ name, remain: blocksPerIngredient }));
+function isWeekdayJP(day){ return ["月","火","水","木","金"].includes(day); }
+
+function makeInventoryFromOverride(list, blocksDefault){
+  return (list||[]).map(x=>({
+    name: x.name,
+    remain: Number.isFinite(+x.blocks) ? +x.blocks : blocksDefault
+  }));
 }
 
-function sumRemain(inv) {
-  return inv.reduce((s, x) => s + x.remain, 0);
-}
-
-/* ---------- 食材選定（不足しても止めない） ---------- */
-
-function calcRequiredBlocksPerWeek(config) {
-  const meals = totalMeals(config);
-  const req = { carb: 0, protein: 0, mineral: 0 };
-  for (let m = 0; m < meals; m++) {
-    const t = mealTargets(config, m);
-    req.carb += tspToBlocks(t.carb, config.blockSizeTsp.carb);
-    req.protein += tspToBlocks(t.protein, config.blockSizeTsp.protein);
-    req.mineral += tspToBlocks(t.mineral, config.blockSizeTsp.mineral);
-  }
-  return req;
-}
-
-function neededKinds(requiredBlocks, blocksPerIngredient) {
-  return Math.ceil(requiredBlocks / blocksPerIngredient);
-}
-
-/**
- * master から「必要種類数」だけ取る。足りない場合は不足を返す（throwしない）。
- */
-function chooseNames(masterList, needKinds) {
-  const available = masterList.length;
-  const take = Math.min(available, needKinds);
-  return {
-    chosen: masterList.slice(0, take),
-    shortage: Math.max(0, needKinds - available)
-  };
-}
-
-/* ---------- 割当ロジック（割当不能でも止めない） ---------- */
-
-/**
- * 直近に使った食材を避けるための軽いスコア
- */
-function scoreItem(item, recentlyUsedSet, avoidRepeat) {
-  let s = item.remain; // 在庫多いほど使う
-  if (avoidRepeat && recentlyUsedSet.has(item.name)) s -= 1000; // 強ペナルティ
+function scoreItem(item, recentlyUsedSet, avoidRepeat){
+  let s = item.remain;
+  if(avoidRepeat && recentlyUsedSet.has(item.name)) s -= 1000;
   return s;
 }
 
-/**
- * 1食分の割当
- * - 在庫(remain)があるものから blocksNeeded を満たす
- * - maxKinds で種類数を制限
- * - autoRelaxMaxKinds=true なら、足りない時に上限を段階的に緩める
- */
-function allocate(inv, blocksNeeded, maxKinds, opts) {
+function allocate(inv, blocksNeeded, maxKinds, opts){
   const { recentlyUsedSet, avoidRepeat, autoRelaxMaxKinds } = opts;
-
   let kindsLimit = maxKinds;
-  for (;;) {
-    let remainNeed = blocksNeeded;
+
+  for(;;){
+    let need = blocksNeeded;
     const picks = [];
 
-    // スコア順（在庫多い＆直近回避）
     const sorted = [...inv]
-      .filter(x => x.remain > 0)
-      .sort((a, b) => scoreItem(b, recentlyUsedSet, avoidRepeat) - scoreItem(a, recentlyUsedSet, avoidRepeat));
+      .filter(x=>x.remain>0)
+      .sort((a,b)=> scoreItem(b,recentlyUsedSet,avoidRepeat) - scoreItem(a,recentlyUsedSet,avoidRepeat));
 
-    for (const item of sorted) {
-      if (remainNeed <= 0) break;
-      if (picks.length >= kindsLimit) break;
-
-      const use = Math.min(item.remain, remainNeed);
-      if (use > 0) {
+    for(const item of sorted){
+      if(need<=0) break;
+      if(picks.length >= kindsLimit) break;
+      const use = Math.min(item.remain, need);
+      if(use>0){
         item.remain -= use;
-        picks.push({ name: item.name, blocks: use });
-        remainNeed -= use;
+        picks.push({ name:item.name, blocks:use });
+        need -= use;
       }
     }
 
-    if (remainNeed <= 0) {
-      return { ok: true, picks, usedKindsLimit: kindsLimit };
+    if(need<=0){
+      return { ok:true, picks, usedKindsLimit:kindsLimit };
     }
 
-    // 失敗：種類上限を緩めるか、諦める
-    if (autoRelaxMaxKinds && kindsLimit < inv.length) {
+    // rollback
+    for(const p of picks){
+      const it = inv.find(x=>x.name===p.name);
+      if(it) it.remain += p.blocks;
+    }
+
+    if(autoRelaxMaxKinds && kindsLimit < inv.length){
       kindsLimit += 1;
       continue;
     }
 
-    // 元に戻す（この試行で減らした分を戻す）
-    for (const p of picks) {
-      const it = inv.find(x => x.name === p.name);
-      if (it) it.remain += p.blocks;
-    }
-
     return {
-      ok: false,
-      picks: [],
-      usedKindsLimit: kindsLimit,
-      reason: `割当不能：blocksNeeded=${blocksNeeded} を満たせません（maxKinds=${kindsLimit} / 在庫合計=${sumRemain(inv)}）。`
+      ok:false,
+      picks:[],
+      usedKindsLimit:kindsLimit,
+      reason:`割当不能：blocksNeeded=${blocksNeeded}（maxKinds=${kindsLimit}）`
     };
   }
 }
 
-/* ---------- メニュー名生成（それっぽく） ---------- */
-
-function menuName(carbPicks, proteinPicks, mineralPicks, phase) {
+function menuName(carbPicks, proteinPicks, mineralPicks, phase){
   const carb = carbPicks[0]?.name ?? "ごはん";
   const p1 = proteinPicks[0]?.name ?? "豆腐";
-  const vegs = mineralPicks.slice(0, 2).map(x => x.name);
+  const vegs = mineralPicks.slice(0,2).map(x=>x.name);
   const v = vegs.length ? vegs.join("と") : "野菜";
 
-  // フェーズで語尾を少し変える（初期は「とろとろ」多め）
-  const base = (phase === "初期")
+  const base = (phase==="初期")
     ? [
-        `${p1}と${v}のとろとろ${carb}`,
-        `${v}入り${p1}のなめらか${carb}`,
-        `${p1}と${v}のやさしい${carb}がゆ`
-      ]
+      `${p1}と${v}のとろとろ${carb}`,
+      `${v}入り${p1}のなめらか${carb}`,
+      `${p1}と${v}のやさしい${carb}がゆ`
+    ]
     : [
-        `${p1}と${v}の${carb}がゆ`,
-        `${p1}と${v}の和風あんかけ${carb}`,
-        `${v}入り${p1}の${carb}リゾット風`,
-        `${p1}と${v}の${carb}煮込み`,
-        `${p1}と${v}の${carb}まぜごはん風`
-      ];
+      `${p1}と${v}の${carb}がゆ`,
+      `${p1}と${v}の和風あんかけ${carb}`,
+      `${v}入り${p1}の${carb}リゾット風`,
+      `${p1}と${v}の${carb}煮込み`,
+      `${p1}と${v}の${carb}まぜごはん風`
+    ];
 
   const key = (carb.length + p1.length + v.length) % base.length;
   return base[key];
 }
 
-/* ---------- メイン ---------- */
-
-export function generateWeeklyPlan(customConfig = {}) {
-  const config = deepMerge(DEFAULT_CONFIG, customConfig);
-
-  const master = FOOD_MASTER[config.phase];
-  if (!master) {
-    return {
-      ok: false,
-      config,
-      errors: [`未知のフェーズ: ${config.phase}`],
-      plan: []
-    };
-  }
-
-  const errors = [];
+// ★メイン：在庫指定 + 新食材ルール対応
+export function generateWeeklyPlanWithInventory(customConfig = {}){
+  const cfg = deepMerge(DEFAULT_CONFIG, customConfig);
   const warnings = [];
-
-  const requiredBlocks = calcRequiredBlocksPerWeek(config);
-
-  // 必要種類数を計算
-  const needKinds = {
-    carb: neededKinds(requiredBlocks.carb, config.blocksPerIngredient),
-    protein: neededKinds(requiredBlocks.protein, config.blocksPerIngredient),
-    mineral: neededKinds(requiredBlocks.mineral, config.blocksPerIngredient)
-  };
-
-  // 選定（不足しても止めない）
-  const carbSel = chooseNames(master.carb, needKinds.carb);
-  const proSel = chooseNames(master.protein, needKinds.protein);
-  const minSel = chooseNames(master.mineral, needKinds.mineral);
-
-  const shortages = {
-    carb: carbSel.shortage,
-    protein: proSel.shortage,
-    mineral: minSel.shortage
-  };
-
-  if (shortages.carb > 0) warnings.push(`炭水化物がマスタ不足：あと ${shortages.carb} 種類必要`);
-  if (shortages.protein > 0) warnings.push(`タンパク質がマスタ不足：あと ${shortages.protein} 種類必要`);
-  if (shortages.mineral > 0) warnings.push(`ミネラルがマスタ不足：あと ${shortages.mineral} 種類必要`);
-
-  // 在庫生成
-  const inv = {
-    carb: makeInventory(carbSel.chosen, config.blocksPerIngredient),
-    protein: makeInventory(proSel.chosen, config.blocksPerIngredient),
-    mineral: makeInventory(minSel.chosen, config.blocksPerIngredient)
-  };
-
-  // もし不足があって在庫合計が必要量に届かないカテゴリがあれば警告
-  if (sumRemain(inv.carb) < requiredBlocks.carb) warnings.push("炭水化物在庫が週必要量に足りません（献立が埋まらない可能性）");
-  if (sumRemain(inv.protein) < requiredBlocks.protein) warnings.push("タンパク質在庫が週必要量に足りません（献立が埋まらない可能性）");
-  if (sumRemain(inv.mineral) < requiredBlocks.mineral) warnings.push("ミネラル在庫が週必要量に足りません（献立が埋まらない可能性）");
-
-  const plan = [];
-  const meals = totalMeals(config);
-
-  // 直近回避用（カテゴリ別に直近1食分だけ避ける）
-  let recent = {
-    carb: new Set(),
-    protein: new Set(),
-    mineral: new Set()
-  };
-
-  let mealIndex = 0;
-  for (const day of config.days) {
-    for (let mealNo = 1; mealNo <= config.mealsPerDay; mealNo++) {
-      const t = mealTargets(config, mealIndex);
-
-      const need = {
-        carb: tspToBlocks(t.carb, config.blockSizeTsp.carb),
-        protein: tspToBlocks(t.protein, config.blockSizeTsp.protein),
-        mineral: tspToBlocks(t.mineral, config.blockSizeTsp.mineral)
-      };
-
-      // 割当
-      const carbAlloc = allocate(inv.carb, need.carb, config.maxKindsPerMeal.carb, {
-        recentlyUsedSet: recent.carb,
-        avoidRepeat: config.avoidRepeat,
-        autoRelaxMaxKinds: config.autoRelaxMaxKinds
-      });
-
-      const proAlloc = allocate(inv.protein, need.protein, config.maxKindsPerMeal.protein, {
-        recentlyUsedSet: recent.protein,
-        avoidRepeat: config.avoidRepeat,
-        autoRelaxMaxKinds: config.autoRelaxMaxKinds
-      });
-
-      const minAlloc = allocate(inv.mineral, need.mineral, config.maxKindsPerMeal.mineral, {
-        recentlyUsedSet: recent.mineral,
-        avoidRepeat: config.avoidRepeat,
-        autoRelaxMaxKinds: config.autoRelaxMaxKinds
-      });
-
-      // 失敗がある場合も plan は埋める（ok=false で理由を書いておく）
-      const ok = carbAlloc.ok && proAlloc.ok && minAlloc.ok;
-      if (!carbAlloc.ok) warnings.push(`[${day}${mealNo}食] 炭水化物: ${carbAlloc.reason}`);
-      if (!proAlloc.ok) warnings.push(`[${day}${mealNo}食] タンパク質: ${proAlloc.reason}`);
-      if (!minAlloc.ok) warnings.push(`[${day}${mealNo}食] ミネラル: ${minAlloc.reason}`);
-
-      const name = menuName(carbAlloc.picks, proAlloc.picks, minAlloc.picks, config.phase);
-
-      plan.push({
-        day,
-        meal: mealNo,
-        ok,
-        menuName: name,
-        targetsTsp: t,
-        blocks: {
-          carb: carbAlloc.picks,
-          protein: proAlloc.picks,
-          mineral: minAlloc.picks
-        },
-        tsp: {
-          carb: carbAlloc.picks.reduce((s, x) => s + x.blocks * config.blockSizeTsp.carb, 0),
-          protein: proAlloc.picks.reduce((s, x) => s + x.blocks * config.blockSizeTsp.protein, 0),
-          mineral: minAlloc.picks.reduce((s, x) => s + x.blocks * config.blockSizeTsp.mineral, 0)
-        },
-        usedKindsLimit: {
-          carb: carbAlloc.usedKindsLimit,
-          protein: proAlloc.usedKindsLimit,
-          mineral: minAlloc.usedKindsLimit
-        }
-      });
-
-      // recent を更新（この食で使ったものを “次の食では避ける”）
-      recent = {
-        carb: new Set(carbAlloc.picks.map(x => x.name)),
-        protein: new Set(proAlloc.picks.map(x => x.name)),
-        mineral: new Set(minAlloc.picks.map(x => x.name))
-      };
-
-      mealIndex++;
-      if (mealIndex >= meals) break;
-    }
-  }
-
-  // leftovers
-  const leftovers = {
-    carb: inv.carb.map(x => ({ name: x.name, remainBlocks: x.remain })).filter(x => x.remainBlocks > 0),
-    protein: inv.protein.map(x => ({ name: x.name, remainBlocks: x.remain })).filter(x => x.remainBlocks > 0),
-    mineral: inv.mineral.map(x => ({ name: x.name, remainBlocks: x.remain })).filter(x => x.remainBlocks > 0)
-  };
-
-  // 「できるだけ使い切り」評価
-  const used = {
-    carb: requiredBlocks.carb - Math.max(0, requiredBlocks.carb - (config.blocksPerIngredient * carbSel.chosen.length - sumRemain(inv.carb))),
-    protein: requiredBlocks.protein - Math.max(0, requiredBlocks.protein - (config.blocksPerIngredient * proSel.chosen.length - sumRemain(inv.protein))),
-    mineral: requiredBlocks.mineral - Math.max(0, requiredBlocks.mineral - (config.blocksPerIngredient * minSel.chosen.length - sumRemain(inv.mineral)))
-  };
-
-  return {
-    ok: errors.length === 0,
-    config,
-    requiredBlocksPerWeek: requiredBlocks,
-    needKinds,
-    chosenFoods: {
-      carb: carbSel.chosen,
-      protein: proSel.chosen,
-      mineral: minSel.chosen
-    },
-    shortages,
-    plan,
-    leftovers,
-    warnings,
-    errors,
-    tips: [
-      "献立が埋まらない/食材種類が増えすぎる場合：blockSizeTsp の見直しが効果的です（特に carb）。",
-      "maxKindsPerMeal が厳しいと割当不能になります。autoRelaxMaxKinds=true で自動緩和します。",
-      "調味料や油は foodMaster.js の extras に分けてあります（配分計算に含めません）。"
-    ]
-  };
-  // ===== 追加: 在庫指定 + 新食材（平日1回目）対応 =====
-
-function isWeekdayJP(dayLabel){
-  // days: ["月","火","水","木","金","土","日"] を想定
-  return ["月","火","水","木","金"].includes(dayLabel);
-}
-
-/**
- * inventoryOverride:
- * {
- *   carb: [{name, blocks}], protein: [{name, blocks}], mineral: [{name, blocks}]
- * }
- * newFoodRule:
- * {
- *   enabled: true,
- *   weekdayOnly: true,
- *   mealNo: 1,
- *   tsp: 1,
- *   // 新食材の候補（順番に消費）
- *   queue: ["鮭","キウイ", ...],
- *   // 食材→カテゴリ判定用（UI側で渡す）
- *   categoryOf: (name)=>"carb"|"protein"|"mineral"|null
- * }
- */
-export function generateWeeklyPlanWithInventory(customConfig = {}) {
-  const config = deepMerge(DEFAULT_CONFIG, customConfig);
-
   const errors = [];
-  const warnings = [];
 
   const inv = {
-    carb: makeInventoryFromOverride(config.inventoryOverride?.carb || [], config.blocksPerIngredient),
-    protein: makeInventoryFromOverride(config.inventoryOverride?.protein || [], config.blocksPerIngredient),
-    mineral: makeInventoryFromOverride(config.inventoryOverride?.mineral || [], config.blocksPerIngredient)
+    carb: makeInventoryFromOverride(cfg.inventoryOverride?.carb || [], cfg.blocksPerIngredient),
+    protein: makeInventoryFromOverride(cfg.inventoryOverride?.protein || [], cfg.blocksPerIngredient),
+    mineral: makeInventoryFromOverride(cfg.inventoryOverride?.mineral || [], cfg.blocksPerIngredient)
   };
 
-  // 新食材（試し）在庫：基本「小さじ1ぶんだけ」＝ blocks で1回分
-  const newRule = config.newFoodRule || { enabled:false };
+  // 何も在庫が選ばれていない場合の早期警告
+  if(inv.carb.length===0) warnings.push("炭水化物の在庫が0です（チェックしてください）");
+  if(inv.protein.length===0) warnings.push("タンパク質の在庫が0です（チェックしてください）");
+  if(inv.mineral.length===0) warnings.push("ミネラルの在庫が0です（チェックしてください）");
+
+  const newRule = cfg.newFoodRule || { enabled:false };
   const newQueue = Array.isArray(newRule.queue) ? [...newRule.queue] : [];
   const categoryOf = newRule.categoryOf || (()=>null);
 
-  const meals = totalMeals(config);
-  let recent = { carb:new Set(), protein:new Set(), mineral:new Set() };
   const plan = [];
+  let recent = { carb:new Set(), protein:new Set(), mineral:new Set() };
 
-  // 週に必要な在庫が足りるか（ざっくり警告）
-  const requiredBlocks = calcRequiredBlocksPerWeek(config);
-  if (sumRemain(inv.carb) < requiredBlocks.carb) warnings.push("炭水化物在庫が週必要量に足りません（献立が埋まらない可能性）");
-  if (sumRemain(inv.protein) < requiredBlocks.protein) warnings.push("タンパク質在庫が週必要量に足りません（献立が埋まらない可能性）");
-  if (sumRemain(inv.mineral) < requiredBlocks.mineral) warnings.push("ミネラル在庫が週必要量に足りません（献立が埋まらない可能性）");
-
+  const meals = totalMeals(cfg);
   let mealIndex = 0;
 
-  for (const day of config.days) {
-    for (let mealNo = 1; mealNo <= config.mealsPerDay; mealNo++) {
+  for(const day of cfg.days){
+    for(let mealNo=1; mealNo<=cfg.mealsPerDay; mealNo++){
 
-      const t = mealTargets(config, mealIndex);
-
-      // まず通常ターゲットから必要ブロック算出
-      const need = {
-        carb: tspToBlocks(t.carb, config.blockSizeTsp.carb),
-        protein: tspToBlocks(t.protein, config.blockSizeTsp.protein),
-        mineral: tspToBlocks(t.mineral, config.blockSizeTsp.mineral)
-      };
-
-      // ★新食材差し込み判定
-      let newFoodPick = null; // {name, category, blocks}
-      if (newRule.enabled) {
-        const okDay = newRule.weekdayOnly ? isWeekdayJP(day) : true;
-        const okMeal = (mealNo === (newRule.mealNo || 1));
-        if (okDay && okMeal && newQueue.length > 0) {
-          const nf = newQueue.shift();
-          const cat = categoryOf(nf);
-          if (!cat || !need[cat] || !inv[cat]) {
-            warnings.push(`[${day}${mealNo}食] 新食材 "${nf}" のカテゴリ判定に失敗（スキップ）`);
-          } else {
-            const blocks = tspToBlocks(newRule.tsp ?? 1, config.blockSizeTsp[cat]);
-            // 試し在庫：その場で1回分だけ持つ（不足ならエラーではなく警告）
-            const trialInv = inv[cat].find(x => x.name === nf);
-            if (trialInv) {
-              // 既存在庫に混ぜて消費
-              if (trialInv.remain >= blocks) {
-                trialInv.remain -= blocks;
-                newFoodPick = { name:nf, category:cat, blocks };
-                need[cat] = Math.max(0, need[cat] - blocks);
-              } else {
-                warnings.push(`[${day}${mealNo}食] 新食材 "${nf}" の在庫が不足（スキップ）`);
-              }
-            } else {
-              // 新食材を“この1回だけ”使う（在庫管理に載せない）
-              newFoodPick = { name:nf, category:cat, blocks };
-              need[cat] = Math.max(0, need[cat] - blocks);
-            }
-          }
-        }
-      }
-
-      // 割当
-      const carbAlloc = allocate(inv.carb, need.carb, config.maxKindsPerMeal.carb, {
-        recentlyUsedSet: recent.carb,
-        avoidRepeat: config.avoidRepeat,
-        autoRelaxMaxKinds: config.autoRelaxMaxKinds
-      });
-      const proAlloc = allocate(inv.protein, need.protein, config.maxKindsPerMeal.protein, {
-        recentlyUsedSet: recent.protein,
-        avoidRepeat: config.avoidRepeat,
-        autoRelaxMaxKinds: config.autoRelaxMaxKinds
-      });
-      const minAlloc = allocate(inv.mineral, need.mineral, config.maxKindsPerMeal.mineral, {
-        recentlyUsedSet: recent.mineral,
-        avoidRepeat: config.avoidRepeat,
-        autoRelaxMaxKinds: config.autoRelaxMaxKinds
-      });
-
-      // 新食材をblocksに反映（カテゴリ内に1要素足す）
-      if (newFoodPick) {
-        const arr = (newFoodPick.category === "carb") ? carbAlloc.picks
-                  : (newFoodPick.category === "protein") ? proAlloc.picks
-                  : minAlloc.picks;
-        arr.unshift({ name: newFoodPick.name, blocks: newFoodPick.blocks, isNew:true });
-      }
-
-      const ok = carbAlloc.ok && proAlloc.ok && minAlloc.ok;
-      if (!carbAlloc.ok) warnings.push(`[${day}${mealNo}食] 炭水化物: ${carbAlloc.reason}`);
-      if (!proAlloc.ok) warnings.push(`[${day}${mealNo}食] タンパク質: ${proAlloc.reason}`);
-      if (!minAlloc.ok) warnings.push(`[${day}${mealNo}食] ミネラル: ${minAlloc.reason}`);
-
-      const name = menuName(carbAlloc.picks, proAlloc.picks, minAlloc.picks, config.phase);
-
-      plan.push({
-        day, meal: mealNo, ok,
-        menuName: name,
-        newFood: newFoodPick ? newFoodPick.name : null,
-        targetsTsp: t,
-        blocks: { carb: carbAlloc.picks, protein: proAlloc.picks, mineral: minAlloc.picks }
-      });
-
-      recent = {
-        carb: new Set(carbAlloc.picks.map(x => x.name)),
-        protein: new Set(proAlloc.picks.map(x => x.name)),
-        mineral: new Set(minAlloc.picks.map(x => x.name))
-      };
-
-      mealIndex++;
-      if (mealIndex >= meals) break;
-    }
-  }
-
-  const leftovers = {
-    carb: inv.carb.map(x => ({ name:x.name, remainBlocks:x.remain })).filter(x=>x.remainBlocks>0),
-    protein: inv.protein.map(x => ({ name:x.name, remainBlocks:x.remain })).filter(x=>x.remainBlocks>0),
-    mineral: inv.mineral.map(x => ({ name:x.name, remainBlocks:x.remain })).filter(x=>x.remainBlocks>0)
-  };
-
-  return { ok: errors.length===0, config, plan, leftovers, warnings, errors };
-}
-
-function makeInventoryFromOverride(list, blocksPerIngredientDefault){
-  // list: [{name, blocks}] blocksが未指定ならデフォルト
-  return (list || []).map(x => ({
-    name: x.name,
-    remain: Number.isFinite(+x.blocks) ? +x.blocks : blocksPerIngredientDefault
-  }));
-}
-// ===== 在庫指定 + 平日1回目だけ新食材対応 =====
-
-function isWeekdayJP(dayLabel){
-  return ["月","火","水","木","金"].includes(dayLabel);
-}
-
-function makeInventoryFromOverride(list, blocksPerIngredientDefault){
-  return (list || []).map(x => ({
-    name: x.name,
-    remain: Number.isFinite(+x.blocks) ? +x.blocks : blocksPerIngredientDefault
-  }));
-}
-
-export function generateWeeklyPlanWithInventory(customConfig = {}) {
-  const config = deepMerge(DEFAULT_CONFIG, customConfig);
-
-  const inv = {
-    carb: makeInventoryFromOverride(config.inventoryOverride?.carb || [], config.blocksPerIngredient),
-    protein: makeInventoryFromOverride(config.inventoryOverride?.protein || [], config.blocksPerIngredient),
-    mineral: makeInventoryFromOverride(config.inventoryOverride?.mineral || [], config.blocksPerIngredient)
-  };
-
-  const newRule = config.newFoodRule || { enabled:false };
-  const newQueue = Array.isArray(newRule.queue) ? [...newRule.queue] : [];
-  const categoryOf = newRule.categoryOf || (()=>null);
-
-  const warnings = [];
-  const plan = [];
-
-  const meals = totalMeals(config);
-  let recent = { carb:new Set(), protein:new Set(), mineral:new Set() };
-  let mealIndex = 0;
-
-  for (const day of config.days) {
-    for (let mealNo = 1; mealNo <= config.mealsPerDay; mealNo++) {
-
-      const t = mealTargets(config, mealIndex);
+      const t = mealTargets(cfg, mealIndex);
 
       const need = {
-        carb: tspToBlocks(t.carb, config.blockSizeTsp.carb),
-        protein: tspToBlocks(t.protein, config.blockSizeTsp.protein),
-        mineral: tspToBlocks(t.mineral, config.blockSizeTsp.mineral)
+        carb: tspToBlocks(t.carb, cfg.blockSizeTsp.carb),
+        protein: tspToBlocks(t.protein, cfg.blockSizeTsp.protein),
+        mineral: tspToBlocks(t.mineral, cfg.blockSizeTsp.mineral)
       };
 
-      // 新食材処理
+      // 新食材差し込み（カテゴリ内で差し引く）
       let newFoodPick = null;
-      if (newRule.enabled) {
+      if(newRule.enabled){
         const okDay = newRule.weekdayOnly ? isWeekdayJP(day) : true;
         const okMeal = (mealNo === (newRule.mealNo || 1));
-
-        if (okDay && okMeal && newQueue.length > 0) {
+        if(okDay && okMeal && newQueue.length>0){
           const nf = newQueue.shift();
           const cat = categoryOf(nf);
-          if (cat && need[cat] > 0) {
-            const blocks = tspToBlocks(newRule.tsp ?? 1, config.blockSizeTsp[cat]);
+          if(!cat || !need[cat]){
+            warnings.push(`[${day}${mealNo}食] 新食材「${nf}」カテゴリ判定失敗`);
+          }else{
+            const blocks = tspToBlocks(newRule.tsp ?? 1, cfg.blockSizeTsp[cat]);
             newFoodPick = { name:nf, category:cat, blocks };
-            need[cat] = Math.max(0, need[cat] - blocks);
-          } else {
-            warnings.push(`[${day}${mealNo}食] 新食材 ${nf} のカテゴリ判定失敗`);
+            need[cat] = Math.max(0, need[cat]-blocks);
           }
         }
       }
 
-      const carbAlloc = allocate(inv.carb, need.carb, config.maxKindsPerMeal.carb, {
-        recentlyUsedSet: recent.carb,
-        avoidRepeat: config.avoidRepeat,
-        autoRelaxMaxKinds: config.autoRelaxMaxKinds
+      const carbAlloc = allocate(inv.carb, need.carb, cfg.maxKindsPerMeal.carb, {
+        recentlyUsedSet: recent.carb, avoidRepeat: cfg.avoidRepeat, autoRelaxMaxKinds: cfg.autoRelaxMaxKinds
+      });
+      const proAlloc = allocate(inv.protein, need.protein, cfg.maxKindsPerMeal.protein, {
+        recentlyUsedSet: recent.protein, avoidRepeat: cfg.avoidRepeat, autoRelaxMaxKinds: cfg.autoRelaxMaxKinds
+      });
+      const minAlloc = allocate(inv.mineral, need.mineral, cfg.maxKindsPerMeal.mineral, {
+        recentlyUsedSet: recent.mineral, avoidRepeat: cfg.avoidRepeat, autoRelaxMaxKinds: cfg.autoRelaxMaxKinds
       });
 
-      const proAlloc = allocate(inv.protein, need.protein, config.maxKindsPerMeal.protein, {
-        recentlyUsedSet: recent.protein,
-        avoidRepeat: config.avoidRepeat,
-        autoRelaxMaxKinds: config.autoRelaxMaxKinds
-      });
+      if(!carbAlloc.ok) warnings.push(`[${day}${mealNo}食] 炭水化物: ${carbAlloc.reason}`);
+      if(!proAlloc.ok) warnings.push(`[${day}${mealNo}食] タンパク: ${proAlloc.reason}`);
+      if(!minAlloc.ok) warnings.push(`[${day}${mealNo}食] ミネラル: ${minAlloc.reason}`);
 
-      const minAlloc = allocate(inv.mineral, need.mineral, config.maxKindsPerMeal.mineral, {
-        recentlyUsedSet: recent.mineral,
-        avoidRepeat: config.avoidRepeat,
-        autoRelaxMaxKinds: config.autoRelaxMaxKinds
-      });
-
-      if (newFoodPick) {
-        const arr =
-          newFoodPick.category === "carb" ? carbAlloc.picks :
-          newFoodPick.category === "protein" ? proAlloc.picks :
-          minAlloc.picks;
-
+      // 新食材を先頭に表示
+      if(newFoodPick){
+        const arr = newFoodPick.category==="carb" ? carbAlloc.picks
+                  : newFoodPick.category==="protein" ? proAlloc.picks
+                  : minAlloc.picks;
         arr.unshift({ name:newFoodPick.name, blocks:newFoodPick.blocks, isNew:true });
       }
 
-      const name = menuName(carbAlloc.picks, proAlloc.picks, minAlloc.picks, config.phase);
+      const name = menuName(carbAlloc.picks, proAlloc.picks, minAlloc.picks, cfg.phase);
 
       plan.push({
-        day,
-        meal: mealNo,
+        day, meal: mealNo,
         ok: carbAlloc.ok && proAlloc.ok && minAlloc.ok,
         menuName: name,
         newFood: newFoodPick ? newFoodPick.name : null,
         targetsTsp: t,
-        blocks: {
-          carb: carbAlloc.picks,
-          protein: proAlloc.picks,
-          mineral: minAlloc.picks
-        }
+        blocks: { carb: carbAlloc.picks, protein: proAlloc.picks, mineral: minAlloc.picks }
       });
 
       recent = {
@@ -677,10 +257,15 @@ export function generateWeeklyPlanWithInventory(customConfig = {}) {
       };
 
       mealIndex++;
-      if (mealIndex >= meals) break;
+      if(mealIndex>=meals) break;
     }
   }
 
-  return { ok:true, plan, warnings };
-}
+  const leftovers = {
+    carb: inv.carb.map(x=>({name:x.name, remainBlocks:x.remain})).filter(x=>x.remainBlocks>0),
+    protein: inv.protein.map(x=>({name:x.name, remainBlocks:x.remain})).filter(x=>x.remainBlocks>0),
+    mineral: inv.mineral.map(x=>({name:x.name, remainBlocks:x.remain})).filter(x=>x.remainBlocks>0)
+  };
+
+  return { ok: errors.length===0, config: cfg, plan, leftovers, warnings, errors };
 }
