@@ -1,4 +1,7 @@
 // js/planner.js
+// 在庫指定で1週間(7日×2回食)を組む
+// + 平日1回目だけ「新食材 小さじ1」を差し込む
+// ★修正点：新食材も「8ブロック在庫」を作って1ブロック消費 → 残り7が表示される
 
 export const DEFAULT_CONFIG = {
   phase: "中期",
@@ -11,7 +14,9 @@ export const DEFAULT_CONFIG = {
     mineral: { min: 4, max: 6 }
   },
 
-  // 1ブロックが何小さじか（炭水化物は10推奨）
+  // 1ブロックが何小さじか（※UIのblocks=8は「ブロック数」）
+  // ここは今の運用に合わせて：炭水化物=10小さじで1ブロック、protein/mineral=1小さじで1ブロック
+  // もし「全カテゴリ 1小さじ=1ブロック」にしたいなら carb も 1 にしてね。
   blockSizeTsp: {
     carb: 10,
     protein: 1,
@@ -179,7 +184,7 @@ function sumAvailableBlocks(inventoryOverride){
   };
 }
 
-// ★メイン：在庫指定 + 新食材 + 不足ブロック情報
+// ★メイン：在庫指定 + 新食材 + 不足ブロック + 新食材在庫計上
 export function generateWeeklyPlanWithInventory(customConfig = {}){
   const cfg = deepMerge(DEFAULT_CONFIG, customConfig);
   const warnings = [];
@@ -212,6 +217,15 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
   const newQueue = Array.isArray(newRule.queue) ? [...newRule.queue] : [];
   const categoryOf = newRule.categoryOf || (()=>null);
 
+  // ★新食材を「8ブロック在庫」として管理（ここが今回の修正）
+  // key: `${cat}::${name}` -> remainBlocks
+  const newFoodStock = new Map();
+  const consumeNewFoodStock = (cat, name, blocks) => {
+    const key = `${cat}::${name}`;
+    if(!newFoodStock.has(key)) newFoodStock.set(key, cfg.blocksPerIngredient);
+    newFoodStock.set(key, Math.max(0, newFoodStock.get(key) - blocks));
+  };
+
   const plan = [];
   let recent = { carb:new Set(), protein:new Set(), mineral:new Set() };
 
@@ -243,6 +257,9 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
             const blocks = tspToBlocks(newRule.tsp ?? 1, cfg.blockSizeTsp[cat]);
             newFoodPick = { name:nf, category:cat, blocks };
             need[cat] = Math.max(0, need[cat]-blocks);
+
+            // ★在庫として消費（= 小さじ1なら 1ブロック消費 → 残り7）
+            consumeNewFoodStock(cat, nf, blocks);
           }
         }
       }
@@ -261,7 +278,7 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
       if(!proAlloc.ok) warnings.push(`[${day}${mealNo}食] タンパク: ${proAlloc.reason}`);
       if(!minAlloc.ok) warnings.push(`[${day}${mealNo}食] ミネラル: ${minAlloc.reason}`);
 
-      // 新食材を先頭に表示
+      // 新食材を先頭に表示（※通常在庫に混ぜない＝他で勝手に消費しない）
       if(newFoodPick){
         const arr = newFoodPick.category==="carb" ? carbAlloc.picks
                   : newFoodPick.category==="protein" ? proAlloc.picks
@@ -291,11 +308,25 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
     }
   }
 
+  // leftovers（通常在庫）
   const leftovers = {
     carb: inv.carb.map(x=>({name:x.name, remainBlocks:x.remain})).filter(x=>x.remainBlocks>0),
     protein: inv.protein.map(x=>({name:x.name, remainBlocks:x.remain})).filter(x=>x.remainBlocks>0),
     mineral: inv.mineral.map(x=>({name:x.name, remainBlocks:x.remain})).filter(x=>x.remainBlocks>0)
   };
+
+  // ★leftoversに「新食材在庫（残り7など）」も追加
+  for(const [key, remain] of newFoodStock.entries()){
+    const [cat, name] = key.split("::");
+    if(remain > 0){
+      leftovers[cat].push({ name, remainBlocks: remain, isNew:true });
+    }
+  }
+
+  // 見た目を揃えるために名前順
+  leftovers.carb.sort((a,b)=> a.name.localeCompare(b.name, "ja"));
+  leftovers.protein.sort((a,b)=> a.name.localeCompare(b.name, "ja"));
+  leftovers.mineral.sort((a,b)=> a.name.localeCompare(b.name, "ja"));
 
   return {
     ok: errors.length===0,
