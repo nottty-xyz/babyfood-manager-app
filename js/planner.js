@@ -1,13 +1,10 @@
 // js/planner.js
-// 完全ロジック版：在庫指定で1週間(7日×2回食)を組む
-// + 平日1回目だけ「新食材 小さじ1」を差し込む（カテゴリ内で差し引き）
 
 export const DEFAULT_CONFIG = {
   phase: "中期",
   days: ["月","火","水","木","金","土","日"],
   mealsPerDay: 2,
 
-  // 1食あたり小さじ（目安）
   tspPerMeal: {
     carb: 10,
     protein: { min: 2, max: 3 },
@@ -30,13 +27,7 @@ export const DEFAULT_CONFIG = {
   },
 
   autoRelaxMaxKinds: true,
-  avoidRepeat: true,
-
-  // UIから渡される在庫
-  // inventoryOverride: { carb:[{name,blocks}], protein:[...], mineral:[...] }
-
-  // UIから渡される新食材ルール
-  // newFoodRule: { enabled, weekdayOnly, mealNo, tsp, queue:[...], categoryOf:(name)=>cat }
+  avoidRepeat: true
 };
 
 function clone(obj){ return JSON.parse(JSON.stringify(obj)); }
@@ -66,12 +57,14 @@ function totalMeals(cfg){ return cfg.days.length * cfg.mealsPerDay; }
 
 function mealTargets(cfg, mealIndex){
   const protein = (mealIndex % 2 === 0) ? cfg.tspPerMeal.protein.min : cfg.tspPerMeal.protein.max;
+
   const mineralBase = (cfg.tspPerMeal.mineral.min + cfg.tspPerMeal.mineral.max) / 2; // 5
   const mineral = clampInt(
     Math.round(mineralBase + ((mealIndex % 3) - 1) * 0.5),
     cfg.tspPerMeal.mineral.min,
     cfg.tspPerMeal.mineral.max
   );
+
   return { carb: cfg.tspPerMeal.carb, protein, mineral };
 }
 
@@ -105,6 +98,7 @@ function allocate(inv, blocksNeeded, maxKinds, opts){
     for(const item of sorted){
       if(need<=0) break;
       if(picks.length >= kindsLimit) break;
+
       const use = Math.min(item.remain, need);
       if(use>0){
         item.remain -= use;
@@ -161,11 +155,48 @@ function menuName(carbPicks, proteinPicks, mineralPicks, phase){
   return base[key];
 }
 
-// ★メイン：在庫指定 + 新食材ルール対応
+// ===== 必要ブロック / 在庫ブロック / 不足ブロック（カテゴリ合計） =====
+
+function calcRequiredBlocksPerWeek(cfg){
+  const meals = totalMeals(cfg);
+  const req = { carb:0, protein:0, mineral:0 };
+
+  for(let m=0; m<meals; m++){
+    const t = mealTargets(cfg, m);
+    req.carb += tspToBlocks(t.carb, cfg.blockSizeTsp.carb);
+    req.protein += tspToBlocks(t.protein, cfg.blockSizeTsp.protein);
+    req.mineral += tspToBlocks(t.mineral, cfg.blockSizeTsp.mineral);
+  }
+  return req;
+}
+
+function sumAvailableBlocks(inventoryOverride){
+  const sum = (arr)=> (arr||[]).reduce((s,x)=> s + (Number.isFinite(+x.blocks)? +x.blocks : 0), 0);
+  return {
+    carb: sum(inventoryOverride?.carb),
+    protein: sum(inventoryOverride?.protein),
+    mineral: sum(inventoryOverride?.mineral)
+  };
+}
+
+// ★メイン：在庫指定 + 新食材 + 不足ブロック情報
 export function generateWeeklyPlanWithInventory(customConfig = {}){
   const cfg = deepMerge(DEFAULT_CONFIG, customConfig);
   const warnings = [];
   const errors = [];
+
+  // 週に必要なブロック / 在庫ブロック / 不足ブロック（カテゴリ合計）
+  const requiredBlocksPerWeek = calcRequiredBlocksPerWeek(cfg);
+  const availableBlocks = sumAvailableBlocks(cfg.inventoryOverride || {});
+  const shortageBlocks = {
+    carb: Math.max(0, requiredBlocksPerWeek.carb - availableBlocks.carb),
+    protein: Math.max(0, requiredBlocksPerWeek.protein - availableBlocks.protein),
+    mineral: Math.max(0, requiredBlocksPerWeek.mineral - availableBlocks.mineral)
+  };
+
+  if (shortageBlocks.carb > 0) warnings.push(`炭水化物が不足：あと ${shortageBlocks.carb} ブロック必要`);
+  if (shortageBlocks.protein > 0) warnings.push(`タンパク質が不足：あと ${shortageBlocks.protein} ブロック必要`);
+  if (shortageBlocks.mineral > 0) warnings.push(`ミネラルが不足：あと ${shortageBlocks.mineral} ブロック必要`);
 
   const inv = {
     carb: makeInventoryFromOverride(cfg.inventoryOverride?.carb || [], cfg.blocksPerIngredient),
@@ -173,7 +204,6 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
     mineral: makeInventoryFromOverride(cfg.inventoryOverride?.mineral || [], cfg.blocksPerIngredient)
   };
 
-  // 何も在庫が選ばれていない場合の早期警告
   if(inv.carb.length===0) warnings.push("炭水化物の在庫が0です（チェックしてください）");
   if(inv.protein.length===0) warnings.push("タンパク質の在庫が0です（チェックしてください）");
   if(inv.mineral.length===0) warnings.push("ミネラルの在庫が0です（チェックしてください）");
@@ -199,7 +229,7 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
         mineral: tspToBlocks(t.mineral, cfg.blockSizeTsp.mineral)
       };
 
-      // 新食材差し込み（カテゴリ内で差し引く）
+      // 新食材（平日1回目に小さじ1）
       let newFoodPick = null;
       if(newRule.enabled){
         const okDay = newRule.weekdayOnly ? isWeekdayJP(day) : true;
@@ -267,5 +297,15 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
     mineral: inv.mineral.map(x=>({name:x.name, remainBlocks:x.remain})).filter(x=>x.remainBlocks>0)
   };
 
-  return { ok: errors.length===0, config: cfg, plan, leftovers, warnings, errors };
+  return {
+    ok: errors.length===0,
+    config: cfg,
+    plan,
+    leftovers,
+    warnings,
+    errors,
+    requiredBlocksPerWeek,
+    availableBlocks,
+    shortageBlocks
+  };
 }
