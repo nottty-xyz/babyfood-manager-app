@@ -146,7 +146,6 @@
     window.addEventListener("error", (ev) => showErr(ev?.error || ev, "JS実行エラー"));
     window.addEventListener("unhandledrejection", (ev) => showErr(ev?.reason || ev, "Promiseエラー"));
 
-    // ★ここが落ちるとチェックボックスが出ないので try/catch
     let FOOD_MASTER, generateWeeklyPlanWithInventory;
 
     try{
@@ -196,7 +195,6 @@
     }
 
     function loadState(){
-      // 共有リンク (#state=...) に対応
       const hash = location.hash || "";
       const m = hash.match(/state=([^&]+)/);
       if(m && m[1]){
@@ -363,7 +361,9 @@
     function renderPlan(result){
       const warnings = (result.warnings && result.warnings.length) ? result.warnings : [];
       const plan = result.plan || [];
+      const leftovers = result.leftovers || {};
 
+      // dayごと
       const byDay = new Map();
       for (const p of plan){
         if(!byDay.has(p.day)) byDay.set(p.day, []);
@@ -378,7 +378,6 @@
           `</ul></div>`;
       }
 
-      // ★planner.js v10は blocks配列の各要素が {name,tsp,blocks} を返す想定
       const line = (arr, label) => {
         const s = (arr||[]).map(x => `${x.name} 小さじ${x.tsp}`).join("、") || "—";
         return `<div class="sub">${label}: ${esc(s)}</div>`;
@@ -400,6 +399,23 @@
         }
         html += `</div>`;
       }
+
+      // ✅ 余り在庫（ここが今回の追加/復活）
+      const lfLine = (arr, label, tspPerBlockHint) => {
+        const items = (arr || []).map(x => {
+          const b = Number.isFinite(+x.remainBlocks) ? +x.remainBlocks : 0;
+          const nice = (Math.round(b*10)/10);
+          return `${x.name} 残${nice}ブロック`;
+        }).join("、");
+        const s = items || "なし";
+        return `<div class="sub">${esc(label)}: ${esc(s)}${tspPerBlockHint ? ` <span class="sub">(${esc(tspPerBlockHint)})</span>` : ""}</div>`;
+      };
+
+      html += `<div class="day"><div class="title">余り在庫</div>`;
+      html += lfLine(leftovers.carb, "炭水化物", "1ブロック=小さじ10");
+      html += lfLine(leftovers.protein, "タンパク", "1ブロック=小さじ1");
+      html += lfLine(leftovers.mineral, "ミネラル", "単品=小さじ1 / 野菜ミックス=小さじ3 / 果物ミックス=小さじ2");
+      html += `</div>`;
 
       outEl.innerHTML = html;
     }
