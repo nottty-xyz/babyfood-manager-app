@@ -45,6 +45,48 @@
   .small{font-size:12px;}
   .danger{background:var(--bad); color:#fff;}
   .right{margin-left:auto;}
+  /* ===== Mobile fix ===== */
+*{ -webkit-tap-highlight-color: transparent; }
+.row{ gap:12px; }
+
+input, select, textarea{
+  font-size:16px; /* iOSの勝手なズーム防止 */
+}
+
+.card{ padding:14px; }
+
+.footerBar{
+  padding:10px 12px;
+}
+
+/* アレルゲン（上の設定エリア）をグリッドに */
+#allergenBox{
+  display:grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap:8px;
+}
+
+/* チェックBOXチップの見た目を安定させる */
+#allergenBox label{
+  display:flex !important;
+  align-items:center;
+  gap:8px;
+  width:100%;
+  box-sizing:border-box;
+  padding:10px 12px !important;
+  border-radius:14px !important;
+}
+
+#allergenBox input[type="checkbox"]{
+  width:20px;
+  height:20px;
+  flex:0 0 20px;
+}
+
+/* 画面が広めなら3列に */
+@media (min-width: 420px){
+  #allergenBox{ grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
 </style>
 </head>
 <body>
