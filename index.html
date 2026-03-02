@@ -147,10 +147,15 @@ console.log("FOOD_MASTER keys", Object.keys(FOOD_MASTER || {}));
   const outEl = document.getElementById("out");
   const genBtn = document.getElementById("gen");
 
-  const invCarbEl = document.getElementById("invCarb");
-  const invProteinEl = document.getElementById("invProtein");
-  const invMineralEl = document.getElementById("invMineral");
-  const newFoodsEl = document.getElementById("newFoods");
+const invCarbEl = document.getElementById("invCarb");
+const invProteinEl = document.getElementById("invProtein");
+const invMineralEl = document.getElementById("invMineral");
+const newFoodsEl = document.getElementById("newFoods");
+
+if (!invCarbEl || !invProteinEl || !invMineralEl || !newFoodsEl) {
+  outEl.textContent = "在庫UIの置き場(div id=invCarb等)がHTMLにありません。index.htmlの追記部分を確認してね。";
+  throw new Error("Missing inventory containers");
+}
 
   const shareBtn = document.getElementById("shareLink");
   const exportBtn = document.getElementById("exportState");
