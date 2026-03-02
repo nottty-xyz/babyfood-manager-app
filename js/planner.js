@@ -564,4 +564,123 @@ function makeInventoryFromOverride(list, blocksPerIngredientDefault){
     remain: Number.isFinite(+x.blocks) ? +x.blocks : blocksPerIngredientDefault
   }));
 }
+// ===== 在庫指定 + 平日1回目だけ新食材対応 =====
+
+function isWeekdayJP(dayLabel){
+  return ["月","火","水","木","金"].includes(dayLabel);
+}
+
+function makeInventoryFromOverride(list, blocksPerIngredientDefault){
+  return (list || []).map(x => ({
+    name: x.name,
+    remain: Number.isFinite(+x.blocks) ? +x.blocks : blocksPerIngredientDefault
+  }));
+}
+
+export function generateWeeklyPlanWithInventory(customConfig = {}) {
+  const config = deepMerge(DEFAULT_CONFIG, customConfig);
+
+  const inv = {
+    carb: makeInventoryFromOverride(config.inventoryOverride?.carb || [], config.blocksPerIngredient),
+    protein: makeInventoryFromOverride(config.inventoryOverride?.protein || [], config.blocksPerIngredient),
+    mineral: makeInventoryFromOverride(config.inventoryOverride?.mineral || [], config.blocksPerIngredient)
+  };
+
+  const newRule = config.newFoodRule || { enabled:false };
+  const newQueue = Array.isArray(newRule.queue) ? [...newRule.queue] : [];
+  const categoryOf = newRule.categoryOf || (()=>null);
+
+  const warnings = [];
+  const plan = [];
+
+  const meals = totalMeals(config);
+  let recent = { carb:new Set(), protein:new Set(), mineral:new Set() };
+  let mealIndex = 0;
+
+  for (const day of config.days) {
+    for (let mealNo = 1; mealNo <= config.mealsPerDay; mealNo++) {
+
+      const t = mealTargets(config, mealIndex);
+
+      const need = {
+        carb: tspToBlocks(t.carb, config.blockSizeTsp.carb),
+        protein: tspToBlocks(t.protein, config.blockSizeTsp.protein),
+        mineral: tspToBlocks(t.mineral, config.blockSizeTsp.mineral)
+      };
+
+      // 新食材処理
+      let newFoodPick = null;
+      if (newRule.enabled) {
+        const okDay = newRule.weekdayOnly ? isWeekdayJP(day) : true;
+        const okMeal = (mealNo === (newRule.mealNo || 1));
+
+        if (okDay && okMeal && newQueue.length > 0) {
+          const nf = newQueue.shift();
+          const cat = categoryOf(nf);
+          if (cat && need[cat] > 0) {
+            const blocks = tspToBlocks(newRule.tsp ?? 1, config.blockSizeTsp[cat]);
+            newFoodPick = { name:nf, category:cat, blocks };
+            need[cat] = Math.max(0, need[cat] - blocks);
+          } else {
+            warnings.push(`[${day}${mealNo}食] 新食材 ${nf} のカテゴリ判定失敗`);
+          }
+        }
+      }
+
+      const carbAlloc = allocate(inv.carb, need.carb, config.maxKindsPerMeal.carb, {
+        recentlyUsedSet: recent.carb,
+        avoidRepeat: config.avoidRepeat,
+        autoRelaxMaxKinds: config.autoRelaxMaxKinds
+      });
+
+      const proAlloc = allocate(inv.protein, need.protein, config.maxKindsPerMeal.protein, {
+        recentlyUsedSet: recent.protein,
+        avoidRepeat: config.avoidRepeat,
+        autoRelaxMaxKinds: config.autoRelaxMaxKinds
+      });
+
+      const minAlloc = allocate(inv.mineral, need.mineral, config.maxKindsPerMeal.mineral, {
+        recentlyUsedSet: recent.mineral,
+        avoidRepeat: config.avoidRepeat,
+        autoRelaxMaxKinds: config.autoRelaxMaxKinds
+      });
+
+      if (newFoodPick) {
+        const arr =
+          newFoodPick.category === "carb" ? carbAlloc.picks :
+          newFoodPick.category === "protein" ? proAlloc.picks :
+          minAlloc.picks;
+
+        arr.unshift({ name:newFoodPick.name, blocks:newFoodPick.blocks, isNew:true });
+      }
+
+      const name = menuName(carbAlloc.picks, proAlloc.picks, minAlloc.picks, config.phase);
+
+      plan.push({
+        day,
+        meal: mealNo,
+        ok: carbAlloc.ok && proAlloc.ok && minAlloc.ok,
+        menuName: name,
+        newFood: newFoodPick ? newFoodPick.name : null,
+        targetsTsp: t,
+        blocks: {
+          carb: carbAlloc.picks,
+          protein: proAlloc.picks,
+          mineral: minAlloc.picks
+        }
+      });
+
+      recent = {
+        carb: new Set(carbAlloc.picks.map(x=>x.name)),
+        protein: new Set(proAlloc.picks.map(x=>x.name)),
+        mineral: new Set(minAlloc.picks.map(x=>x.name))
+      };
+
+      mealIndex++;
+      if (mealIndex >= meals) break;
+    }
+  }
+
+  return { ok:true, plan, warnings };
+}
 }
