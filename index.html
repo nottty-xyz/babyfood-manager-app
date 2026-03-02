@@ -31,17 +31,31 @@
   </div>
 
   <script type="module">
-    import { generateWeeklyPlan } from "./js/planner.js";
+  const phaseEl = document.getElementById("phase");
+  const outEl = document.getElementById("out");
+  const genBtn = document.getElementById("gen");
 
-    const phaseEl = document.getElementById("phase");
-    const outEl = document.getElementById("out");
-    const genBtn = document.getElementById("gen");
+  // ここが表示されたら「moduleは動いてる」
+  outEl.textContent = "module読み込みOK（ボタンで生成します）";
+
+  try {
+    const mod = await import("./js/planner.js");
+    const generateWeeklyPlan = mod.generateWeeklyPlan;
 
     genBtn.addEventListener("click", () => {
-      const result = generateWeeklyPlan({ phase: phaseEl.value });
-      // ひとまずJSON表示（あとで表UIにできる）
-      outEl.textContent = JSON.stringify(result.plan, null, 2);
+      try {
+        outEl.textContent = "生成中…";
+        const result = generateWeeklyPlan({ phase: phaseEl.value });
+        outEl.textContent = JSON.stringify(result.plan, null, 2);
+      } catch (err) {
+        console.error(err);
+        outEl.textContent = "生成エラー:\n" + (err?.stack || err?.message || String(err));
+      }
     });
-  </script>
+  } catch (err) {
+    console.error(err);
+    outEl.textContent = "読み込みエラー:\n" + (err?.stack || err?.message || String(err));
+  }
+</script>
 </body>
 </html>
