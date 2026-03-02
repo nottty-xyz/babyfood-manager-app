@@ -30,12 +30,11 @@
     <pre id="out">まだ生成していません</pre>
   </div>
 
-  <script type="module">
+<script type="module">
   const phaseEl = document.getElementById("phase");
   const outEl = document.getElementById("out");
   const genBtn = document.getElementById("gen");
 
-  // ここが表示されたら「moduleは動いてる」
   outEl.textContent = "module読み込みOK（ボタンで生成します）";
 
   try {
@@ -45,16 +44,35 @@
     genBtn.addEventListener("click", () => {
       try {
         outEl.textContent = "生成中…";
+
         const result = generateWeeklyPlan({ phase: phaseEl.value });
-        outEl.textContent = JSON.stringify(result.plan, null, 2);
+
+        const warnings = (result.warnings && result.warnings.length)
+          ? result.warnings.join("\n")
+          : "なし";
+
+        outEl.textContent =
+          "=== WARNINGS ===\n" + warnings +
+          "\n\n=== PLAN ===\n" + JSON.stringify(result.plan, null, 2) +
+          "\n\n=== LEFTOVERS ===\n" + JSON.stringify(result.leftovers, null, 2) +
+          "\n\n=== META ===\n" + JSON.stringify({
+            phase: result.config?.phase,
+            requiredBlocksPerWeek: result.requiredBlocksPerWeek,
+            needKinds: result.needKinds,
+            chosenFoods: result.chosenFoods,
+            shortages: result.shortages
+          }, null, 2);
+
       } catch (err) {
         console.error(err);
-        outEl.textContent = "生成エラー:\n" + (err?.stack || err?.message || String(err));
+        outEl.textContent =
+          "生成エラー:\n" + (err?.message || "") + "\n\n" + (err?.stack || String(err));
       }
     });
   } catch (err) {
     console.error(err);
-    outEl.textContent = "読み込みエラー:\n" + (err?.stack || err?.message || String(err));
+    outEl.textContent =
+      "読み込みエラー:\n" + (err?.message || "") + "\n\n" + (err?.stack || String(err));
   }
 </script>
 </body>
