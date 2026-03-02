@@ -1,9 +1,9 @@
 // js/planner.js
-// 完全整理版 v6
-// ✅ 新食材は初回は必ず小さじ1のみ（全カテゴリ統一）
-// ✅ その食では同じ新食材を追加で消費しない
-// ✅ 不足は同カテゴリ他食材で補う
-// ✅ ミネラル単品は優先消費するが、ミックスは必ず残す
+// 完全整理版 v7
+// ✅ 新食材は初回は必ず小さじ1のみ（全カテゴリ）
+// ✅ 同じ食で追加消費しない
+// ✅ カテゴリ混入絶対なし
+// ✅ ミネラル単品優先＋ミックス最低保証
 
 export const DEFAULT_CONFIG = {
   phase: "中期",
@@ -33,21 +33,23 @@ export const DEFAULT_CONFIG = {
 };
 
 function tspToBlocks(tsp,size){ return Math.ceil(tsp/size); }
-function isWeekdayJP(d){ return ["月","火","水","木","金"].includes(d); }
+function isWeekday(d){ return ["月","火","水","木","金"].includes(d); }
 function clamp(n,min,max){ return Math.max(min,Math.min(max,n)); }
 
 function mealTargets(cfg,i){
   const protein=(i%2===0)?cfg.tspPerMeal.protein.min:cfg.tspPerMeal.protein.max;
   const mBase=(cfg.tspPerMeal.mineral.min+cfg.tspPerMeal.mineral.max)/2;
-  const mineral=clamp(Math.round(mBase),cfg.tspPerMeal.mineral.min,cfg.tspPerMeal.mineral.max);
-  return {carb:cfg.tspPerMeal.carb,protein,mineral};
+  return {
+    carb:cfg.tspPerMeal.carb,
+    protein,
+    mineral:clamp(Math.round(mBase),cfg.tspPerMeal.mineral.min,cfg.tspPerMeal.mineral.max)
+  };
 }
 
 const FRUITS=new Set(["りんご","いちご","メロン","バナナ","すいか","梨","みかん","桃","キウイ","ぶどう","グレープフルーツ","アボカド","ブルーベリー","ラズベリー","パイン"]);
 function isFruit(n){return FRUITS.has(n);}
 
 function makeInv(list,b){return (list||[]).map(x=>({name:x.name,remain:b}));}
-
 function ensure(inv,name,b){
   let i=inv.find(x=>x.name===name);
   if(!i){i={name,remain:b};inv.unshift(i);}
@@ -78,7 +80,9 @@ function buildMix(base){
 }
 
 export function generateWeeklyPlanWithInventory(customConfig={}){
+
   const cfg={...DEFAULT_CONFIG,...customConfig};
+
   const inv={
     carb:makeInv(cfg.inventoryOverride?.carb,cfg.blocksPerIngredient),
     protein:makeInv(cfg.inventoryOverride?.protein,cfg.blocksPerIngredient),
@@ -91,7 +95,6 @@ export function generateWeeklyPlanWithInventory(customConfig={}){
   const queue=(rule.queue||[]).slice(0,5);
   let ptr=0;
 
-  // 新食材在庫追加
   for(const nf of queue){
     const cat=categoryOf(nf);
     if(cat==="mineral") ensure(inv.mineralSingles,nf,cfg.blocksPerIngredient);
@@ -115,18 +118,21 @@ export function generateWeeklyPlanWithInventory(customConfig={}){
 
       const exclude={carb:new Set(),protein:new Set(),mineral:new Set()};
       let newPick=null;
+      let newCategory=null;
 
-      if(rule.enabled && isWeekdayJP(day) && mealNo===1 && ptr<queue.length){
+      if(rule.enabled && isWeekday(day) && mealNo===1 && ptr<queue.length){
         const nf=queue[ptr++];
         const cat=categoryOf(nf);
+        newCategory=cat;
         const blocks=1;
         newPick={name:`${nf}(新)`,blocks};
+
         if(cat==="mineral"){
           const it=ensure(inv.mineralSingles,nf,cfg.blocksPerIngredient);
           it.remain-=blocks;
           need.mineral-=blocks;
           exclude.mineral.add(nf);
-        }else{
+        }else if(cat==="carb"||cat==="protein"){
           const it=ensure(inv[cat],nf,cfg.blocksPerIngredient);
           it.remain-=blocks;
           need[cat]-=blocks;
@@ -136,15 +142,12 @@ export function generateWeeklyPlanWithInventory(customConfig={}){
 
       const carbAlloc=alloc(inv.carb,need.carb,exclude.carb);
       const proAlloc=alloc(inv.protein,need.protein,exclude.protein);
-
       missing.carb+=carbAlloc.missing;
       missing.protein+=proAlloc.missing;
 
-      // ミネラル
       let mNeed=need.mineral;
       const mineralPicks=[];
 
-      // 単品優先だがミックス最低確保
       const maxSingle=Math.floor(mNeed*cfg.mineralSinglesPolicy.maxSingleShare);
       const minMix=Math.min(cfg.mineralSinglesPolicy.minMixTsp,mNeed);
       const singleAllowed=Math.max(0,Math.min(maxSingle,mNeed-minMix));
@@ -171,16 +174,16 @@ export function generateWeeklyPlanWithInventory(customConfig={}){
 
       missing.mineral+=mNeed;
 
+      // ✅ カテゴリごとにだけ追加（混入なし）
       if(newPick){
-        if(newPick.name.includes("(新)") && need.mineral!==undefined){
-          mineralPicks.unshift(newPick);
-        }
-        if(need.carb!==undefined) carbAlloc.picks.unshift(newPick);
-        if(need.protein!==undefined) proAlloc.picks.unshift(newPick);
+        if(newCategory==="carb") carbAlloc.picks.unshift(newPick);
+        if(newCategory==="protein") proAlloc.picks.unshift(newPick);
+        if(newCategory==="mineral") mineralPicks.unshift(newPick);
       }
 
       plan.push({
-        day,meal:mealNo,ok:(mNeed===0 && carbAlloc.missing===0 && proAlloc.missing===0),
+        day,meal:mealNo,
+        ok:(carbAlloc.missing===0 && proAlloc.missing===0 && mNeed===0),
         targetsTsp:t,
         blocks:{
           carb:carbAlloc.picks,
