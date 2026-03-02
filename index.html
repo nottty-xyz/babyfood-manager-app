@@ -7,7 +7,7 @@
   <style>
     body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:16px;background:#f4f6f8}
     .card{background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:12px}
-    button{padding:10px 12px;border-radius:12px;border:0;background:#2563eb;color:#fff;font-weight:800}
+    button{padding:12px 14px;border-radius:12px;border:0;background:#2563eb;color:#fff;font-weight:800}
     select{padding:10px;border-radius:12px;border:1px solid #e5e7eb}
     .ghost{background:#fff;border:1px solid #e5e7eb;color:#111827}
     .day{margin:12px 0;padding:12px;border:1px solid #e5e7eb;border-radius:14px;background:#fff}
@@ -21,21 +21,49 @@
     .chipLabel{display:inline-flex;align-items:center;gap:8px;margin:6px 10px 6px 0;padding:8px 10px;border:1px solid #e5e7eb;border-radius:12px;background:#fff}
     .row{display:flex;gap:8px;flex-wrap:wrap}
     hr{border:none;border-top:1px solid #e5e7eb;margin:12px 0}
+
+    /* Accordion */
+    details{background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:10px}
+    summary{cursor:pointer;list-style:none;font-weight:900;display:flex;align-items:center;justify-content:space-between}
+    summary::-webkit-details-marker{display:none}
+    .sumRight{font-weight:700;color:#6b7280;font-size:12px}
+    details[open] summary{margin-bottom:8px}
+    .accBody{padding-top:6px}
+
+    /* Generate bar */
+    .genBar{
+      position: sticky;
+      bottom: 10px;
+      background: rgba(244,246,248,0.95);
+      padding: 10px;
+      border: 1px solid #e5e7eb;
+      border-radius: 14px;
+      backdrop-filter: blur(6px);
+      margin-top: 12px;
+    }
+    .genBarInner{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    .genBtn{flex:1;min-width:220px}
   </style>
 </head>
 <body>
   <div class="card">
     <h1 style="margin:0 0 10px;">離乳食 週次献立プランナー</h1>
 
-    <label>フェーズ：</label>
-    <select id="phase">
-      <option>初期</option>
-      <option selected>中期</option>
-      <option>後期</option>
-      <option>完了期</option>
-    </select>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <div>
+        <label>フェーズ：</label>
+        <select id="phase">
+          <option>初期</option>
+          <option selected>中期</option>
+          <option>後期</option>
+          <option>完了期</option>
+        </select>
+      </div>
 
-    <button id="gen" style="margin-left:8px;">1週間生成</button>
+      <button id="shareLink" class="ghost" type="button">家族に共有リンク</button>
+      <button id="exportState" class="ghost" type="button">設定エクスポート</button>
+      <button id="importState" class="ghost" type="button">設定インポート</button>
+    </div>
 
     <hr>
 
@@ -43,34 +71,62 @@
     <div class="sub">チェックした食材だけで1週間を組みます（在庫は基本8ブロック）。</div>
 
     <div style="display:grid;grid-template-columns:1fr;gap:10px;margin-top:10px;">
-      <div class="day">
-        <div class="title">炭水化物</div>
-        <div id="invCarb" class="row"></div>
-      </div>
-      <div class="day">
-        <div class="title">タンパク質</div>
-        <div id="invProtein" class="row"></div>
-      </div>
-      <div class="day">
-        <div class="title">ミネラル（野菜/果物など）</div>
-        <div id="invMineral" class="row"></div>
-      </div>
+      <details id="accCarb" open>
+        <summary>
+          <span>炭水化物</span>
+          <span class="sumRight" id="countCarb">0件選択</span>
+        </summary>
+        <div class="accBody">
+          <div id="invCarb" class="row"></div>
+        </div>
+      </details>
+
+      <details id="accProtein">
+        <summary>
+          <span>タンパク質</span>
+          <span class="sumRight" id="countProtein">0件選択</span>
+        </summary>
+        <div class="accBody">
+          <div id="invProtein" class="row"></div>
+        </div>
+      </details>
+
+      <details id="accMineral">
+        <summary>
+          <span>ミネラル（野菜/果物など）</span>
+          <span class="sumRight" id="countMineral">0件選択</span>
+        </summary>
+        <div class="accBody">
+          <div id="invMineral" class="row"></div>
+        </div>
+      </details>
     </div>
 
-    <h2 style="margin:14px 0 6px;">新食材（平日1回目に小さじ1）</h2>
-    <div class="sub">チェックした順に、月〜金の1回目に1つずつ入ります。</div>
-    <div class="day">
-      <div id="newFoods" class="row"></div>
-    </div>
+    <hr>
 
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
-      <button id="shareLink" class="ghost" type="button">家族に共有リンク</button>
-      <button id="exportState" class="ghost" type="button">設定エクスポート</button>
-      <button id="importState" class="ghost" type="button">設定インポート</button>
+    <h2 style="margin:0 0 6px;">新食材（平日1回目に小さじ1）</h2>
+    <div class="sub">在庫で選んでいない食材から選べます。チェック順に、月〜金の1回目に1つずつ入ります。</div>
+
+    <details id="accNewFoods">
+      <summary>
+        <span>新食材候補</span>
+        <span class="sumRight" id="countNew">0件選択</span>
+      </summary>
+      <div class="accBody">
+        <div id="newFoods" class="row"></div>
+      </div>
+    </details>
+
+    <!-- 生成ボタン：チェックの後に押せる位置 -->
+    <div class="genBar">
+      <div class="genBarInner">
+        <button id="gen" class="genBtn">この設定で1週間生成</button>
+        <div class="sub" id="genHint">在庫をチェックしてから押してね</div>
+      </div>
     </div>
 
     <h2 style="margin:14px 0 6px;">結果</h2>
-    <div id="out">設定して「1週間生成」を押してね</div>
+    <div id="out">設定して「この設定で1週間生成」を押してね</div>
   </div>
 
   <script type="module">
@@ -80,17 +136,23 @@
     const phaseEl = document.getElementById("phase");
     const outEl = document.getElementById("out");
     const genBtn = document.getElementById("gen");
+    const genHintEl = document.getElementById("genHint");
 
     const invCarbEl = document.getElementById("invCarb");
     const invProteinEl = document.getElementById("invProtein");
     const invMineralEl = document.getElementById("invMineral");
     const newFoodsEl = document.getElementById("newFoods");
 
+    const countCarbEl = document.getElementById("countCarb");
+    const countProteinEl = document.getElementById("countProtein");
+    const countMineralEl = document.getElementById("countMineral");
+    const countNewEl = document.getElementById("countNew");
+
     const shareBtn = document.getElementById("shareLink");
     const exportBtn = document.getElementById("exportState");
     const importBtn = document.getElementById("importState");
 
-    // エラーを画面に出す（モバイル用）
+    // モバイル用：エラーを画面に出す
     window.addEventListener("error", (e) => {
       outEl.textContent = "JSエラー: " + (e?.message || "unknown");
     });
@@ -154,6 +216,26 @@
       };
     }
 
+    function countSelected(mapObj){
+      return Object.keys(mapObj || {}).filter(k => mapObj[k]).length;
+    }
+
+    function updateCounts(){
+      const c = countSelected(state.inv?.carb);
+      const p = countSelected(state.inv?.protein);
+      const m = countSelected(state.inv?.mineral);
+      const n = (state.newQueue || []).length;
+
+      countCarbEl.textContent = `${c}件選択`;
+      countProteinEl.textContent = `${p}件選択`;
+      countMineralEl.textContent = `${m}件選択`;
+      countNewEl.textContent = `${n}件選択`;
+
+      const total = c + p + m;
+      genHintEl.textContent =
+        total === 0 ? "在庫をチェックしてから押してね" : `在庫合計 ${total} 件（炭水化物${c}/タンパク${p}/ミネラル${m}）`;
+    }
+
     function renderChecklist(container, items, checkedMap, onChange){
       container.innerHTML = "";
       items.forEach(name=>{
@@ -195,6 +277,7 @@
             if(idx>=0) queue.splice(idx,1);
           }
           saveState();
+          updateCounts();
         });
 
         const span = document.createElement("span");
@@ -206,21 +289,10 @@
       });
     }
 
-    function rebuildUI(){
+    function rebuildNewCandidates(){
       const phase = phaseEl.value;
       const master = FOOD_MASTER[phase];
 
-      state.inv ||= { carb:{}, protein:{}, mineral:{} };
-      state.inv.carb ||= {};
-      state.inv.protein ||= {};
-      state.inv.mineral ||= {};
-      state.newQueue ||= [];
-
-      renderChecklist(invCarbEl, master.carb, state.inv.carb, ()=>{ saveState(); rebuildUI(); });
-      renderChecklist(invProteinEl, master.protein, state.inv.protein, ()=>{ saveState(); rebuildUI(); });
-      renderChecklist(invMineralEl, master.mineral, state.inv.mineral, ()=>{ saveState(); rebuildUI(); });
-
-      // 新食材候補：在庫で選んでいないもの
       const chosen = new Set([
         ...Object.keys(state.inv.carb).filter(k=>state.inv.carb[k]),
         ...Object.keys(state.inv.protein).filter(k=>state.inv.protein[k]),
@@ -233,13 +305,34 @@
         ...master.mineral.filter(x=>!chosen.has(x))
       ];
 
-      // queueの中で候補から外れたものを除去
       state.newQueue = state.newQueue.filter(x => newCandidates.includes(x));
-
       renderNewFoods(newFoodsEl, newCandidates, state.newQueue);
+      saveState();
+      updateCounts();
+    }
+
+    function rebuildUI(){
+      const phase = phaseEl.value;
+      const master = FOOD_MASTER[phase];
+
+      state.inv ||= { carb:{}, protein:{}, mineral:{} };
+      state.inv.carb ||= {};
+      state.inv.protein ||= {};
+      state.inv.mineral ||= {};
+      state.newQueue ||= [];
+
+      // チェックごとにUI全再描画しない（スクロール飛び防止）
+      const onInvChange = () => { saveState(); updateCounts(); rebuildNewCandidates(); };
+
+      renderChecklist(invCarbEl, master.carb, state.inv.carb, onInvChange);
+      renderChecklist(invProteinEl, master.protein, state.inv.protein, onInvChange);
+      renderChecklist(invMineralEl, master.mineral, state.inv.mineral, onInvChange);
+
+      rebuildNewCandidates();
 
       state.phase = phase;
       saveState();
+      updateCounts();
     }
 
     function renderPlan(result){
@@ -253,6 +346,36 @@
       }
 
       let html = "";
+
+      // ✅ 不足ブロック表示（カテゴリ合計）
+      if (result.requiredBlocksPerWeek && result.availableBlocks && result.shortageBlocks) {
+        const r = result.requiredBlocksPerWeek;
+        const a = result.availableBlocks;
+        const s = result.shortageBlocks;
+
+        const line = (label, key) => {
+          const shortage = s[key] || 0;
+          const badge = shortage > 0
+            ? `<span class="badge warn">不足 +${shortage}ブロック</span>`
+            : `<span class="badge ok">不足なし</span>`;
+          return `
+            <div class="sub">
+              ${badge}
+              <b>${label}</b>：必要 ${r[key]} / 在庫 ${a[key]}（ブロック）
+            </div>
+          `;
+        };
+
+        html += `
+          <div class="day">
+            <div class="title">在庫不足チェック</div>
+            ${line("炭水化物", "carb")}
+            ${line("タンパク質", "protein")}
+            ${line("ミネラル", "mineral")}
+            <div class="sub">※不足があるカテゴリは、チェックする食材を増やすと埋まりやすくなります。</div>
+          </div>
+        `;
+      }
 
       if (warnings.length){
         html += `<div class="day"><div class="title">Warnings</div><ul class="list">` +
@@ -302,7 +425,7 @@
 
     phaseEl.addEventListener("change", ()=>{
       rebuildUI();
-      outEl.textContent = "設定して「1週間生成」を押してね";
+      outEl.textContent = "設定して「この設定で1週間生成」を押してね";
     });
 
     genBtn.addEventListener("click", ()=>{
@@ -372,7 +495,6 @@
       }
     });
 
-    // 初期描画
     rebuildUI();
   </script>
 </body>
