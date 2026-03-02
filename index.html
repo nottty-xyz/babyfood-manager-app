@@ -88,7 +88,7 @@
     <hr>
 
     <h2 style="margin:0 0 6px;">新食材（平日1回目に小さじ1）</h2>
-    <div class="sub">在庫で選んでいない食材から選べます。チェック順に、月〜金の1回目に1つずつ入ります。</div>
+    <div class="sub">在庫で選んでいない食材から選べます。チェック順に、月〜金の1回目に1つずつ入ります（最大5つ）。</div>
 
     <details>
       <summary><span>新食材候補</span><span class="sumRight" id="countNew">0件選択</span></summary>
@@ -192,24 +192,81 @@
       };
     }
 
-    function countSelected(mapObj){
-      return Object.keys(mapObj || {}).filter(k => mapObj[k]).length;
+    function selectedKeys(mapObj){
+      return Object.keys(mapObj || {}).filter(k => mapObj[k]);
+    }
+
+    // ★新食材は「最大5つ」が今週の在庫(8ブロック)として増えるので、ボタン下の数にも含める
+    function computeCountsIncludingNewFoods(){
+      const phase = phaseEl.value;
+      const categoryOf = categoryOfFactory(phase);
+
+      const carbSel = selectedKeys(state.inv?.carb);
+      const proSel  = selectedKeys(state.inv?.protein);
+      const minSel  = selectedKeys(state.inv?.mineral);
+
+      const base = {
+        carb: carbSel.length,
+        protein: proSel.length,
+        mineral: minSel.length
+      };
+
+      const newQueue = Array.isArray(state.newQueue) ? state.newQueue : [];
+      const usedNew = newQueue.slice(0, 5); // 月〜金の1回目だけ
+
+      const add = { carb:0, protein:0, mineral:0 };
+
+      // 既に在庫で選ばれてる場合は（基本ないはずだが）二重カウントしない
+      const chosen = new Set([...carbSel, ...proSel, ...minSel]);
+
+      for(const nf of usedNew){
+        if(chosen.has(nf)) continue;
+        const cat = categoryOf(nf);
+        if(cat === "carb") add.carb++;
+        if(cat === "protein") add.protein++;
+        if(cat === "mineral") add.mineral++;
+      }
+
+      return {
+        base,
+        add,
+        total: {
+          carb: base.carb + add.carb,
+          protein: base.protein + add.protein,
+          mineral: base.mineral + add.mineral
+        },
+        newUsedCount: usedNew.length
+      };
     }
 
     function updateCounts(){
-      const c = countSelected(state.inv?.carb);
-      const p = countSelected(state.inv?.protein);
-      const m = countSelected(state.inv?.mineral);
-      const n = (state.newQueue || []).length;
+      const baseCarb = selectedKeys(state.inv?.carb).length;
+      const basePro  = selectedKeys(state.inv?.protein).length;
+      const baseMin  = selectedKeys(state.inv?.mineral).length;
 
-      countCarbEl.textContent = `${c}件選択`;
-      countProteinEl.textContent = `${p}件選択`;
-      countMineralEl.textContent = `${m}件選択`;
-      countNewEl.textContent = `${n}件選択`;
+      countCarbEl.textContent = `${baseCarb}件選択`;
+      countProteinEl.textContent = `${basePro}件選択`;
+      countMineralEl.textContent = `${baseMin}件選択`;
+      countNewEl.textContent = `${(state.newQueue||[]).length}件選択`;
 
-      const total = c + p + m;
+      const c = computeCountsIncludingNewFoods();
+      const totalBase = baseCarb + basePro + baseMin;
+      const totalWithNew = c.total.carb + c.total.protein + c.total.mineral;
+
+      if(totalBase === 0){
+        genHintEl.textContent = "在庫をチェックしてから押してね";
+        return;
+      }
+
+      // ボタン下：新食材が在庫に加わる分を明示
+      const plus = (c.add.carb + c.add.protein + c.add.mineral);
+      const plusText = plus > 0
+        ? ` + 新食材${c.newUsedCount}つ分（在庫として追加）`
+        : "";
+
       genHintEl.textContent =
-        total === 0 ? "在庫をチェックしてから押してね" : `在庫合計 ${total} 件（炭水化物${c}/タンパク${p}/ミネラル${m}）`;
+        `在庫合計 ${totalWithNew} 件（炭水化物${c.total.carb}/タンパク${c.total.protein}/ミネラル${c.total.mineral}）`
+        + plusText;
     }
 
     function renderChecklist(container, items, checkedMap, onChange){
@@ -270,9 +327,9 @@
       const master = FOOD_MASTER[phase];
 
       const chosen = new Set([
-        ...Object.keys(state.inv.carb).filter(k=>state.inv.carb[k]),
-        ...Object.keys(state.inv.protein).filter(k=>state.inv.protein[k]),
-        ...Object.keys(state.inv.mineral).filter(k=>state.inv.mineral[k])
+        ...selectedKeys(state.inv.carb),
+        ...selectedKeys(state.inv.protein),
+        ...selectedKeys(state.inv.mineral)
       ]);
 
       const newCandidates = [
@@ -281,7 +338,7 @@
         ...master.mineral.filter(x=>!chosen.has(x))
       ];
 
-      state.newQueue = state.newQueue.filter(x => newCandidates.includes(x));
+      state.newQueue = (state.newQueue||[]).filter(x => newCandidates.includes(x));
       renderNewFoods(newFoodsEl, newCandidates, state.newQueue);
       saveState();
       updateCounts();
@@ -322,49 +379,6 @@
 
       let html = "";
 
-      // 不足ブロック表示（カテゴリ合計）
-      if (result.requiredBlocksPerWeek && result.availableBlocks && result.shortageBlocks) {
-        const r = result.requiredBlocksPerWeek;
-        const a = result.availableBlocks;
-        const s = result.shortageBlocks;
-
-        const line = (label, key) => {
-          const shortage = s[key] || 0;
-          const badge = shortage > 0
-            ? `<span class="badge warn">不足 +${shortage}ブロック</span>`
-            : `<span class="badge ok">不足なし</span>`;
-          return `
-            <div class="sub">
-              ${badge}
-              <b>${label}</b>：必要 ${r[key]} / 在庫 ${a[key]}（ブロック）
-            </div>
-          `;
-        };
-
-        html += `
-          <div class="day">
-            <div class="title">在庫不足チェック</div>
-            ${line("炭水化物", "carb")}
-            ${line("タンパク質", "protein")}
-            ${line("ミネラル", "mineral")}
-            <div class="sub">※余りがあるのに不足が出ないように、新食材の在庫も計算に含めています。</div>
-          </div>
-        `;
-      }
-
-      // ミネラルミックス情報
-      if (result.mineralMixMeta) {
-        const mm = result.mineralMixMeta;
-        html += `
-          <div class="day">
-            <div class="title">今週のミネラルミックス</div>
-            <div class="sub"><b>${esc(mm.vegMixName)}</b></div>
-            <div class="sub"><b>${esc(mm.fruitMixName)}</b></div>
-            <div class="sub">※この2つを冷凍して、1週間同じミックスを使う想定です。</div>
-          </div>
-        `;
-      }
-
       if (warnings.length){
         html += `<div class="day"><div class="title">Warnings</div><ul class="list">` +
           warnings.map(w => `<li>${esc(w)}</li>`).join("") +
@@ -375,7 +389,6 @@
         html += `<div class="day"><div class="title">${esc(day)}曜日</div>`;
         for (const m of meals){
           const okBadge = m.ok ? `<span class="badge ok">OK</span>` : `<span class="badge warn">要確認</span>`;
-          const newBadge = m.newFood ? `<span class="badge warn">新:${esc(m.newFood)} 小さじ1</span>` : "";
 
           const toLine = (arr, label, mode) => {
             const items = (arr || []).map(x => {
@@ -389,7 +402,7 @@
 
           html += `
             <div class="meal">
-              <div>${okBadge}${newBadge}<b>${esc(m.meal)}回目：</b>${esc(m.menuName)}</div>
+              <div>${okBadge}<b>${esc(m.meal)}回目：</b>${esc(m.menuName || "献立")}</div>
               <div class="sub">目安：炭水化物${m.targetsTsp.carb} / タンパク${m.targetsTsp.protein} / ミネラル${m.targetsTsp.mineral}（小さじ）</div>
               ${toLine(m.blocks.carb, "炭水化物", "blocks")}
               ${toLine(m.blocks.protein, "タンパク", "blocks")}
@@ -429,9 +442,9 @@
       const categoryOf = categoryOfFactory(phase);
 
       const invOverride = {
-        carb: Object.keys(state.inv.carb).filter(k=>state.inv.carb[k]).map(name=>({name, blocks:8})),
-        protein: Object.keys(state.inv.protein).filter(k=>state.inv.protein[k]).map(name=>({name, blocks:8})),
-        mineral: Object.keys(state.inv.mineral).filter(k=>state.inv.mineral[k]).map(name=>({name, blocks:8}))
+        carb: selectedKeys(state.inv.carb).map(name=>({name, blocks:8})),
+        protein: selectedKeys(state.inv.protein).map(name=>({name, blocks:8})),
+        mineral: selectedKeys(state.inv.mineral).map(name=>({name, blocks:8}))
       };
 
       const result = generateWeeklyPlanWithInventory({
