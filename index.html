@@ -10,15 +10,6 @@
     button{padding:12px 14px;border-radius:12px;border:0;background:#2563eb;color:#fff;font-weight:800}
     select{padding:10px;border-radius:12px;border:1px solid #e5e7eb}
     .ghost{background:#fff;border:1px solid #e5e7eb;color:#111827}
-    .day{margin:12px 0;padding:12px;border:1px solid #e5e7eb;border-radius:14px;background:#fff}
-    .meal{margin-top:10px;padding-top:10px;border-top:1px dashed #e5e7eb}
-    .title{font-weight:900}
-    .sub{color:#6b7280;font-size:12px;margin-top:4px}
-    .badge{display:inline-block;font-size:11px;padding:3px 8px;border:1px solid #e5e7eb;border-radius:999px;margin-right:6px}
-    .warn{background:#fff7ed;border-color:#fed7aa}
-    .ok{background:#ecfdf5;border-color:#bbf7d0}
-    .list{margin:6px 0 0;padding-left:18px}
-    .chipLabel{display:inline-flex;align-items:center;gap:8px;margin:6px 10px 6px 0;padding:8px 10px;border:1px solid #e5e7eb;border-radius:12px;background:#fff}
     .row{display:flex;gap:8px;flex-wrap:wrap}
     hr{border:none;border-top:1px solid #e5e7eb;margin:12px 0}
 
@@ -28,6 +19,27 @@
     .sumRight{font-weight:700;color:#6b7280;font-size:12px}
     details[open] summary{margin-bottom:8px}
     .accBody{padding-top:6px}
+
+    .chipLabel{
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      margin:6px 10px 6px 0;
+      padding:8px 10px;
+      border:1px solid #e5e7eb;
+      border-radius:12px;
+      background:#fff;
+    }
+    .chipLabel input{ width:18px; height:18px; }
+
+    .day{margin:12px 0;padding:12px;border:1px solid #e5e7eb;border-radius:14px;background:#fff}
+    .meal{margin-top:10px;padding-top:10px;border-top:1px dashed #e5e7eb}
+    .title{font-weight:900}
+    .sub{color:#6b7280;font-size:12px;margin-top:4px}
+    .badge{display:inline-block;font-size:11px;padding:3px 8px;border:1px solid #e5e7eb;border-radius:999px;margin-right:6px}
+    .warn{background:#fff7ed;border-color:#fed7aa}
+    .ok{background:#ecfdf5;border-color:#bbf7d0}
+    .list{margin:6px 0 0;padding-left:18px}
 
     .genBar{
       position: sticky;
@@ -41,11 +53,25 @@
     }
     .genBarInner{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
     .genBtn{flex:1;min-width:220px}
+
+    .err{
+      white-space:pre-wrap;
+      word-break:break-word;
+      background:#fff1f2;
+      border:1px solid #fecdd3;
+      color:#7f1d1d;
+      padding:10px;
+      border-radius:12px;
+      margin:10px 0;
+      display:none;
+    }
   </style>
 </head>
 <body>
   <div class="card">
     <h1 style="margin:0 0 10px;">離乳食 週次献立プランナー</h1>
+
+    <div id="err" class="err"></div>
 
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
       <div>
@@ -107,13 +133,39 @@
   </div>
 
   <script type="module">
-    import { FOOD_MASTER } from "./js/foodMaster.js";
-    import { generateWeeklyPlanWithInventory } from "./js/planner.js";
+    const errEl = document.getElementById("err");
+    const showErr = (e, label="エラー") => {
+      console.error(e);
+      errEl.style.display = "block";
+      errEl.textContent =
+        label + ":\n" +
+        (e?.message || String(e)) +
+        (e?.stack ? "\n\n" + e.stack : "");
+    };
+
+    window.addEventListener("error", (ev) => showErr(ev?.error || ev, "JS実行エラー"));
+    window.addEventListener("unhandledrejection", (ev) => showErr(ev?.reason || ev, "Promiseエラー"));
+
+    // ★ここが落ちるとチェックボックスが出ないので try/catch
+    let FOOD_MASTER, generateWeeklyPlanWithInventory;
+
+    try{
+      ({ FOOD_MASTER } = await import("./js/foodMaster.js"));
+    }catch(e){
+      showErr(e, "foodMaster.js 読み込み失敗（./js/foodMaster.js）");
+      throw e;
+    }
+
+    try{
+      ({ generateWeeklyPlanWithInventory } = await import("./js/planner.js"));
+    }catch(e){
+      showErr(e, "planner.js 読み込み失敗（./js/planner.js）");
+      throw e;
+    }
 
     const phaseEl = document.getElementById("phase");
     const outEl = document.getElementById("out");
     const genBtn = document.getElementById("gen");
-    const genHintEl = document.getElementById("genHint");
 
     const invCarbEl = document.getElementById("invCarb");
     const invProteinEl = document.getElementById("invProtein");
@@ -125,65 +177,60 @@
     const countMineralEl = document.getElementById("countMineral");
     const countNewEl = document.getElementById("countNew");
 
+    const genHintEl = document.getElementById("genHint");
+
     const shareBtn = document.getElementById("shareLink");
     const exportBtn = document.getElementById("exportState");
     const importBtn = document.getElementById("importState");
 
-    window.addEventListener("error", (e) => {
-      outEl.textContent = "JSエラー: " + (e?.message || "unknown");
-    });
-
     const LS_KEY = "babyfood_planner_state_v1";
 
-    function esc(s){
-      return String(s ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
-    }
+    const defaultState = () => ({
+      phase: "中期",
+      inv: { carb:{}, protein:{}, mineral:{} },
+      newQueue: []
+    });
 
-    function b64EncodeUnicode(obj){
-      const json = JSON.stringify(obj);
-      return btoa(unescape(encodeURIComponent(json)));
-    }
-    function b64DecodeUnicode(s){
-      const json = decodeURIComponent(escape(atob(s)));
-      return JSON.parse(json);
-    }
-
-    function defaultState(){
-      return { phase: "中期", inv: { carb:{}, protein:{}, mineral:{} }, newQueue: [] };
+    function safeJsonParse(s){
+      try{ return JSON.parse(s); }catch(e){ return null; }
     }
 
     function loadState(){
+      // 共有リンク (#state=...) に対応
       const hash = location.hash || "";
       const m = hash.match(/state=([^&]+)/);
-      if (m && m[1]) {
-        try {
-          const imported = b64DecodeUnicode(m[1]);
-          localStorage.setItem(LS_KEY, JSON.stringify(imported));
+      if(m && m[1]){
+        try{
+          const obj = JSON.parse(decodeURIComponent(escape(atob(m[1]))));
+          localStorage.setItem(LS_KEY, JSON.stringify(obj));
           history.replaceState(null, "", location.pathname + location.search);
-          return imported;
-        } catch (e) {}
+          return { ...defaultState(), ...obj };
+        }catch(e){}
       }
-      try{
-        const raw = localStorage.getItem(LS_KEY);
-        if(!raw) return defaultState();
-        return { ...defaultState(), ...JSON.parse(raw) };
-      }catch(e){
-        return defaultState();
-      }
+
+      const raw = localStorage.getItem(LS_KEY);
+      const obj = raw ? safeJsonParse(raw) : null;
+      return obj ? { ...defaultState(), ...obj } : defaultState();
     }
 
     let state = loadState();
     phaseEl.value = state.phase || "中期";
 
     function saveState(){
+      state.phase = phaseEl.value;
       localStorage.setItem(LS_KEY, JSON.stringify(state));
     }
 
+    function selectedKeys(mapObj){
+      return Object.keys(mapObj || {}).filter(k => mapObj[k]);
+    }
+
     function categoryOfFactory(phase){
-      const m = FOOD_MASTER[phase];
-      const setCarb = new Set(m.carb);
-      const setPro = new Set(m.protein);
-      const setMin = new Set(m.mineral);
+      const m = FOOD_MASTER?.[phase];
+      if(!m) return () => null;
+      const setCarb = new Set(m.carb || []);
+      const setPro = new Set(m.protein || []);
+      const setMin = new Set(m.mineral || []);
       return (name)=>{
         if(setCarb.has(name)) return "carb";
         if(setPro.has(name)) return "protein";
@@ -192,86 +239,9 @@
       };
     }
 
-    function selectedKeys(mapObj){
-      return Object.keys(mapObj || {}).filter(k => mapObj[k]);
-    }
-
-    // ★新食材は「最大5つ」が今週の在庫(8ブロック)として増えるので、ボタン下の数にも含める
-    function computeCountsIncludingNewFoods(){
-      const phase = phaseEl.value;
-      const categoryOf = categoryOfFactory(phase);
-
-      const carbSel = selectedKeys(state.inv?.carb);
-      const proSel  = selectedKeys(state.inv?.protein);
-      const minSel  = selectedKeys(state.inv?.mineral);
-
-      const base = {
-        carb: carbSel.length,
-        protein: proSel.length,
-        mineral: minSel.length
-      };
-
-      const newQueue = Array.isArray(state.newQueue) ? state.newQueue : [];
-      const usedNew = newQueue.slice(0, 5); // 月〜金の1回目だけ
-
-      const add = { carb:0, protein:0, mineral:0 };
-
-      // 既に在庫で選ばれてる場合は（基本ないはずだが）二重カウントしない
-      const chosen = new Set([...carbSel, ...proSel, ...minSel]);
-
-      for(const nf of usedNew){
-        if(chosen.has(nf)) continue;
-        const cat = categoryOf(nf);
-        if(cat === "carb") add.carb++;
-        if(cat === "protein") add.protein++;
-        if(cat === "mineral") add.mineral++;
-      }
-
-      return {
-        base,
-        add,
-        total: {
-          carb: base.carb + add.carb,
-          protein: base.protein + add.protein,
-          mineral: base.mineral + add.mineral
-        },
-        newUsedCount: usedNew.length
-      };
-    }
-
-    function updateCounts(){
-      const baseCarb = selectedKeys(state.inv?.carb).length;
-      const basePro  = selectedKeys(state.inv?.protein).length;
-      const baseMin  = selectedKeys(state.inv?.mineral).length;
-
-      countCarbEl.textContent = `${baseCarb}件選択`;
-      countProteinEl.textContent = `${basePro}件選択`;
-      countMineralEl.textContent = `${baseMin}件選択`;
-      countNewEl.textContent = `${(state.newQueue||[]).length}件選択`;
-
-      const c = computeCountsIncludingNewFoods();
-      const totalBase = baseCarb + basePro + baseMin;
-      const totalWithNew = c.total.carb + c.total.protein + c.total.mineral;
-
-      if(totalBase === 0){
-        genHintEl.textContent = "在庫をチェックしてから押してね";
-        return;
-      }
-
-      // ボタン下：新食材が在庫に加わる分を明示
-      const plus = (c.add.carb + c.add.protein + c.add.mineral);
-      const plusText = plus > 0
-        ? ` + 新食材${c.newUsedCount}つ分（在庫として追加）`
-        : "";
-
-      genHintEl.textContent =
-        `在庫合計 ${totalWithNew} 件（炭水化物${c.total.carb}/タンパク${c.total.protein}/ミネラル${c.total.mineral}）`
-        + plusText;
-    }
-
     function renderChecklist(container, items, checkedMap, onChange){
       container.innerHTML = "";
-      items.forEach(name=>{
+      (items || []).forEach(name=>{
         const label = document.createElement("label");
         label.className = "chipLabel";
 
@@ -294,7 +264,7 @@
 
     function renderNewFoods(container, items, queue){
       container.innerHTML = "";
-      items.forEach(name=>{
+      (items || []).forEach(name=>{
         const label = document.createElement("label");
         label.className = "chipLabel";
 
@@ -333,9 +303,9 @@
       ]);
 
       const newCandidates = [
-        ...master.carb.filter(x=>!chosen.has(x)),
-        ...master.protein.filter(x=>!chosen.has(x)),
-        ...master.mineral.filter(x=>!chosen.has(x))
+        ...(master.carb||[]).filter(x=>!chosen.has(x)),
+        ...(master.protein||[]).filter(x=>!chosen.has(x)),
+        ...(master.mineral||[]).filter(x=>!chosen.has(x))
       ];
 
       state.newQueue = (state.newQueue||[]).filter(x => newCandidates.includes(x));
@@ -344,27 +314,50 @@
       updateCounts();
     }
 
+    function updateCounts(){
+      const baseCarb = selectedKeys(state.inv?.carb).length;
+      const basePro  = selectedKeys(state.inv?.protein).length;
+      const baseMin  = selectedKeys(state.inv?.mineral).length;
+      const newCount = (state.newQueue||[]).length;
+
+      countCarbEl.textContent = `${baseCarb}件選択`;
+      countProteinEl.textContent = `${basePro}件選択`;
+      countMineralEl.textContent = `${baseMin}件選択`;
+      countNewEl.textContent = `${newCount}件選択`;
+
+      const total = baseCarb + basePro + baseMin;
+      genHintEl.textContent = total ? `在庫チェック済み：合計${total}件（＋新食材は最大5つ）` : "在庫をチェックしてから押してね";
+    }
+
     function rebuildUI(){
-      const phase = phaseEl.value;
-      const master = FOOD_MASTER[phase];
+      try{
+        const phase = phaseEl.value;
+        const master = FOOD_MASTER[phase];
+        if(!master) throw new Error("FOOD_MASTERにこのフェーズがありません: " + phase);
 
-      state.inv ||= { carb:{}, protein:{}, mineral:{} };
-      state.inv.carb ||= {};
-      state.inv.protein ||= {};
-      state.inv.mineral ||= {};
-      state.newQueue ||= [];
+        state.inv ||= { carb:{}, protein:{}, mineral:{} };
+        state.inv.carb ||= {};
+        state.inv.protein ||= {};
+        state.inv.mineral ||= {};
+        state.newQueue ||= [];
 
-      const onInvChange = () => { saveState(); updateCounts(); rebuildNewCandidates(); };
+        const onInvChange = () => { saveState(); updateCounts(); rebuildNewCandidates(); };
 
-      renderChecklist(invCarbEl, master.carb, state.inv.carb, onInvChange);
-      renderChecklist(invProteinEl, master.protein, state.inv.protein, onInvChange);
-      renderChecklist(invMineralEl, master.mineral, state.inv.mineral, onInvChange);
+        renderChecklist(invCarbEl, master.carb, state.inv.carb, onInvChange);
+        renderChecklist(invProteinEl, master.protein, state.inv.protein, onInvChange);
+        renderChecklist(invMineralEl, master.mineral, state.inv.mineral, onInvChange);
 
-      rebuildNewCandidates();
+        rebuildNewCandidates();
+        updateCounts();
 
-      state.phase = phase;
-      saveState();
-      updateCounts();
+        outEl.textContent = "設定して「この設定で1週間生成」を押してね";
+      }catch(e){
+        showErr(e, "UI構築エラー（チェックボックスが出ない原因）");
+      }
+    }
+
+    function esc(s){
+      return String(s ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
     }
 
     function renderPlan(result){
@@ -385,114 +378,92 @@
           `</ul></div>`;
       }
 
+      // ★planner.js v10は blocks配列の各要素が {name,tsp,blocks} を返す想定
+      const line = (arr, label) => {
+        const s = (arr||[]).map(x => `${x.name} 小さじ${x.tsp}`).join("、") || "—";
+        return `<div class="sub">${label}: ${esc(s)}</div>`;
+      };
+
       for (const [day, meals] of byDay.entries()){
         html += `<div class="day"><div class="title">${esc(day)}曜日</div>`;
         for (const m of meals){
           const okBadge = m.ok ? `<span class="badge ok">OK</span>` : `<span class="badge warn">要確認</span>`;
-
-          const toLine = (arr, label, mode) => {
-            const items = (arr || []).map(x => {
-              if(mode==="tsp"){
-                return `${x.name} 小さじ${x.blocks}${x.isNew ? "(新)" : ""}`;
-              }
-              return `${x.name}×${x.blocks}ブロック${x.isNew ? "(新)" : ""}`;
-            }).join("、") || "—";
-            return `<div class="sub">${label}: ${esc(items)}</div>`;
-          };
-
           html += `
             <div class="meal">
               <div>${okBadge}<b>${esc(m.meal)}回目：</b>${esc(m.menuName || "献立")}</div>
               <div class="sub">目安：炭水化物${m.targetsTsp.carb} / タンパク${m.targetsTsp.protein} / ミネラル${m.targetsTsp.mineral}（小さじ）</div>
-              ${toLine(m.blocks.carb, "炭水化物", "blocks")}
-              ${toLine(m.blocks.protein, "タンパク", "blocks")}
-              ${toLine(m.blocks.mineral, "ミネラル（野菜/果物ミックス）", "tsp")}
+              ${line(m.blocks.carb, "炭水化物")}
+              ${line(m.blocks.protein, "タンパク")}
+              ${line(m.blocks.mineral, "ミネラル")}
             </div>
           `;
         }
         html += `</div>`;
       }
 
-      // 余り在庫
-      html += `<div class="day"><div class="title">余り在庫</div>`;
-      const lf = result.leftovers || {};
-      const lfLine = (k, label, mode) => {
-        const arr = lf[k] || [];
-        const s = arr.length ? arr.map(x => {
-          if(mode==="tsp") return `${x.name}(小さじ${x.remainBlocks})`;
-          return `${x.name}(${x.remainBlocks})`;
-        }).join("、") : "なし";
-        return `<div class="sub">${label}: ${esc(s)}</div>`;
-      };
-      html += lfLine("carb","炭水化物","blocks");
-      html += lfLine("protein","タンパク","blocks");
-      html += lfLine("mineral","ミネラル（ミックス在庫）","tsp");
-      html += `</div>`;
-
       outEl.innerHTML = html;
     }
 
-    phaseEl.addEventListener("change", ()=>{
-      rebuildUI();
-      outEl.textContent = "設定して「この設定で1週間生成」を押してね";
-    });
-
     genBtn.addEventListener("click", ()=>{
-      const phase = phaseEl.value;
-      const categoryOf = categoryOfFactory(phase);
+      try{
+        const phase = phaseEl.value;
+        const categoryOf = categoryOfFactory(phase);
 
-      const invOverride = {
-        carb: selectedKeys(state.inv.carb).map(name=>({name, blocks:8})),
-        protein: selectedKeys(state.inv.protein).map(name=>({name, blocks:8})),
-        mineral: selectedKeys(state.inv.mineral).map(name=>({name, blocks:8}))
-      };
+        const invOverride = {
+          carb: selectedKeys(state.inv.carb).map(name=>({name, blocks:8})),
+          protein: selectedKeys(state.inv.protein).map(name=>({name, blocks:8})),
+          mineral: selectedKeys(state.inv.mineral).map(name=>({name, blocks:8}))
+        };
 
-      const result = generateWeeklyPlanWithInventory({
-        phase,
-        inventoryOverride: invOverride,
-        newFoodRule: {
-          enabled: true,
-          weekdayOnly: true,
-          mealNo: 1,
-          tsp: 1,
-          queue: state.newQueue,
-          categoryOf
-        }
-      });
+        const result = generateWeeklyPlanWithInventory({
+          phase,
+          inventoryOverride: invOverride,
+          newFoodRule: {
+            enabled: true,
+            weekdayOnly: true,
+            mealNo: 1,
+            tsp: 1,
+            queue: state.newQueue,
+            categoryOf
+          }
+        });
 
-      renderPlan(result);
+        renderPlan(result);
+      }catch(e){
+        showErr(e, "生成エラー（ボタン押下）");
+      }
     });
 
+    // 共有/エクスポート/インポート
     shareBtn.addEventListener("click", async ()=>{
-      const token = b64EncodeUnicode(state);
-      const url = location.origin + location.pathname + "#state=" + token;
-
       try{
-        if (navigator.share) {
+        const token = btoa(unescape(encodeURIComponent(JSON.stringify(state))));
+        const url = location.origin + location.pathname + "#state=" + token;
+        if(navigator.share){
           await navigator.share({ title:"離乳食プラン設定", url });
-        } else {
+        }else{
           await navigator.clipboard.writeText(url);
           alert("共有リンクをコピーしました");
         }
       }catch(e){
-        prompt("このリンクをコピーして家族に送ってね", url);
+        showErr(e, "共有リンク作成エラー");
       }
     });
 
     exportBtn.addEventListener("click", async ()=>{
-      const json = JSON.stringify(state, null, 2);
       try{
+        const json = JSON.stringify(state, null, 2);
         await navigator.clipboard.writeText(json);
         alert("設定JSONをコピーしました");
       }catch(e){
-        prompt("このJSONをコピーして保存してね", json);
+        showErr(e, "エクスポート失敗");
       }
     });
 
     importBtn.addEventListener("click", ()=>{
-      const txt = prompt("設定JSONを貼り付けてOKを押してね");
-      if(!txt) return;
       try{
+        const txt = prompt("設定JSONを貼り付けてOKを押してね");
+        if(!txt) return;
         const obj = JSON.parse(txt);
         state = { ...defaultState(), ...obj };
         phaseEl.value = state.phase || "中期";
@@ -500,8 +471,13 @@
         rebuildUI();
         alert("インポートしました");
       }catch(e){
-        alert("JSONが読めませんでした");
+        showErr(e, "インポート失敗");
       }
+    });
+
+    phaseEl.addEventListener("change", ()=>{
+      saveState();
+      rebuildUI();
     });
 
     rebuildUI();
