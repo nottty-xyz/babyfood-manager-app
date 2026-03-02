@@ -10,6 +10,14 @@
     button{padding:10px 12px;border-radius:12px;border:0;background:#2563eb;color:#fff;font-weight:700}
     select{padding:10px;border-radius:12px;border:1px solid #e5e7eb}
     pre{white-space:pre-wrap;word-break:break-word}
+    .day{margin:12px 0;padding:12px;border:1px solid #e5e7eb;border-radius:14px;background:#fff}
+.meal{margin-top:10px;padding-top:10px;border-top:1px dashed #e5e7eb}
+.title{font-weight:800}
+.sub{color:#6b7280;font-size:12px;margin-top:4px}
+.badge{display:inline-block;font-size:11px;padding:3px 8px;border:1px solid #e5e7eb;border-radius:999px;margin-right:6px}
+.warn{background:#fff7ed;border-color:#fed7aa}
+.ok{background:#ecfdf5;border-color:#bbf7d0}
+.list{margin:6px 0 0;padding-left:18px}
   </style>
 </head>
 <body>
@@ -37,42 +45,84 @@
 
   outEl.textContent = "module読み込みOK（ボタンで生成します）";
 
+  function esc(s){
+    return String(s ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
+  }
+
+  function render(result){
+    const warnings = (result.warnings && result.warnings.length) ? result.warnings : [];
+    const plan = result.plan || [];
+
+    // dayごとにまとめる
+    const byDay = new Map();
+    for (const p of plan){
+      if(!byDay.has(p.day)) byDay.set(p.day, []);
+      byDay.get(p.day).push(p);
+    }
+
+    let html = "";
+
+    if (warnings.length){
+      html += `<div class="day"><div class="title">Warnings</div><ul class="list">` +
+        warnings.map(w => `<li>${esc(w)}</li>`).join("") +
+        `</ul></div>`;
+    }
+
+    for (const [day, meals] of byDay.entries()){
+      html += `<div class="day"><div class="title">${esc(day)}曜日</div>`;
+      for (const m of meals){
+        const okBadge = m.ok ? `<span class="badge ok">OK</span>` : `<span class="badge warn">要確認</span>`;
+
+        const toLine = (arr, label) => {
+          const items = (arr || []).map(x => `${x.name}×${x.blocks}ブロック`).join("、") || "—";
+          return `<div class="sub">${label}: ${esc(items)}</div>`;
+        };
+
+        html += `
+          <div class="meal">
+            <div>${okBadge}<b>${esc(m.meal)}回目：</b>${esc(m.menuName)}</div>
+            <div class="sub">目安：炭水化物${m.targetsTsp.carb} / タンパク${m.targetsTsp.protein} / ミネラル${m.targetsTsp.mineral}（小さじ）</div>
+            ${toLine(m.blocks.carb, "炭水化物")}
+            ${toLine(m.blocks.protein, "タンパク")}
+            ${toLine(m.blocks.mineral, "ミネラル")}
+          </div>
+        `;
+      }
+      html += `</div>`;
+    }
+
+    // leftovers
+    html += `<div class="day"><div class="title">余り在庫</div>`;
+    const lf = result.leftovers || {};
+    const lfLine = (k, label) => {
+      const arr = lf[k] || [];
+      const s = arr.length ? arr.map(x => `${x.name}(${x.remainBlocks})`).join("、") : "なし";
+      return `<div class="sub">${label}: ${esc(s)}</div>`;
+    };
+    html += lfLine("carb","炭水化物");
+    html += lfLine("protein","タンパク");
+    html += lfLine("mineral","ミネラル");
+    html += `</div>`;
+
+    outEl.innerHTML = html;
+  }
+
   try {
     const mod = await import("./js/planner.js");
     const generateWeeklyPlan = mod.generateWeeklyPlan;
 
     genBtn.addEventListener("click", () => {
       try {
-        outEl.textContent = "生成中…";
-
         const result = generateWeeklyPlan({ phase: phaseEl.value });
-
-        const warnings = (result.warnings && result.warnings.length)
-          ? result.warnings.join("\n")
-          : "なし";
-
-        outEl.textContent =
-          "=== WARNINGS ===\n" + warnings +
-          "\n\n=== PLAN ===\n" + JSON.stringify(result.plan, null, 2) +
-          "\n\n=== LEFTOVERS ===\n" + JSON.stringify(result.leftovers, null, 2) +
-          "\n\n=== META ===\n" + JSON.stringify({
-            phase: result.config?.phase,
-            requiredBlocksPerWeek: result.requiredBlocksPerWeek,
-            needKinds: result.needKinds,
-            chosenFoods: result.chosenFoods,
-            shortages: result.shortages
-          }, null, 2);
-
+        render(result);
       } catch (err) {
         console.error(err);
-        outEl.textContent =
-          "生成エラー:\n" + (err?.message || "") + "\n\n" + (err?.stack || String(err));
+        outEl.textContent = "生成エラー:\n" + (err?.message || "") + "\n\n" + (err?.stack || String(err));
       }
     });
   } catch (err) {
     console.error(err);
-    outEl.textContent =
-      "読み込みエラー:\n" + (err?.message || "") + "\n\n" + (err?.stack || String(err));
+    outEl.textContent = "読み込みエラー:\n" + (err?.message || "") + "\n\n" + (err?.stack || String(err));
   }
 </script>
 </body>
