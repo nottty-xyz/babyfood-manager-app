@@ -139,6 +139,10 @@
   </
 
 <script type="module">
+window.addEventListener("error", function(e){
+  alert("JSエラー: " + e.message);
+});
+alert("script開始");
   alert("module単体は動く");
 </script>
 </body>
