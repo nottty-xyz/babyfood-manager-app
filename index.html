@@ -7,141 +7,373 @@
   <style>
     body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;margin:16px;background:#f4f6f8}
     .card{background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:12px}
-    button{padding:10px 12px;border-radius:12px;border:0;background:#2563eb;color:#fff;font-weight:700}
-    button.ghost{background:#fff;color:#111;border:1px solid #e5e7eb}
-    select,input{padding:10px;border-radius:12px;border:1px solid #e5e7eb}
-    .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-    .muted{color:#6b7280;font-size:12px}
+    button{padding:10px 12px;border-radius:12px;border:0;background:#2563eb;color:#fff;font-weight:800}
+    select{padding:10px;border-radius:12px;border:1px solid #e5e7eb}
+    .ghost{background:#fff;border:1px solid #e5e7eb;color:#111827}
     .day{margin:12px 0;padding:12px;border:1px solid #e5e7eb;border-radius:14px;background:#fff}
     .meal{margin-top:10px;padding-top:10px;border-top:1px dashed #e5e7eb}
-    .title{font-weight:800}
+    .title{font-weight:900}
     .sub{color:#6b7280;font-size:12px;margin-top:4px}
     .badge{display:inline-block;font-size:11px;padding:3px 8px;border:1px solid #e5e7eb;border-radius:999px;margin-right:6px}
     .warn{background:#fff7ed;border-color:#fed7aa}
     .ok{background:#ecfdf5;border-color:#bbf7d0}
     .list{margin:6px 0 0;padding-left:18px}
-    details{background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:10px;margin-top:10px}
-    summary{font-weight:800;cursor:pointer}
-    .grid{display:grid;grid-template-columns:1fr;gap:8px;margin-top:8px}
-    @media(min-width:820px){ .grid{grid-template-columns: 1fr 1fr 1fr;} }
-    .foodItem{display:flex;gap:10px;align-items:center;justify-content:space-between;border:1px solid #e5e7eb;border-radius:12px;padding:8px 10px;background:#fff}
-    .foodLeft{display:flex;gap:10px;align-items:center}
-    .pill{font-size:11px;border:1px solid #e5e7eb;border-radius:999px;padding:2px 8px;color:#6b7280;background:#fff}
-    .smallBtn{padding:8px 10px;border-radius:12px}
-    textarea{width:100%;border:1px solid #e5e7eb;border-radius:12px;padding:10px;min-height:80px}
+    .chipLabel{display:inline-flex;align-items:center;gap:8px;margin:6px 10px 6px 0;padding:8px 10px;border:1px solid #e5e7eb;border-radius:12px;background:#fff}
+    .row{display:flex;gap:8px;flex-wrap:wrap}
+    hr{border:none;border-top:1px solid #e5e7eb;margin:12px 0}
   </style>
 </head>
 <body>
-  <h1 style="color:red">これは最新版です</h1>
   <div class="card">
     <h1 style="margin:0 0 10px;">離乳食 週次献立プランナー</h1>
 
-    <div class="row">
-      <label>フェーズ：</label>
-      <select id="phase">
-        <option>初期</option>
-        <option selected>中期</option>
-        <option>後期</option>
-        <option>完了期</option>
-      </select>
+    <label>フェーズ：</label>
+    <select id="phase">
+      <option>初期</option>
+      <option selected>中期</option>
+      <option>後期</option>
+      <option>完了期</option>
+    </select>
 
-      <span class="muted">炭水化物ブロック：</span>
-      <select id="carbBlock">
-        <option value="10" selected>1ブロック=小さじ10（おすすめ）</option>
-        <option value="1">1ブロック=小さじ1（食材数が激増）</option>
-      </select>
+    <button id="gen" style="margin-left:8px;">1週間生成</button>
 
-      <button id="gen">1週間生成</button>
-      <button class="ghost" id="share">共有リンク作成</button>
-      <button class="ghost" id="copyJson">JSONコピー</button>
+    <hr>
+
+    <h2 style="margin:0 0 6px;">在庫（今週使う食材セット）</h2>
+    <div class="sub">チェックした食材だけで1週間を組みます（在庫は基本8ブロック）。</div>
+
+    <div style="display:grid;grid-template-columns:1fr;gap:10px;margin-top:10px;">
+      <div class="day">
+        <div class="title">炭水化物</div>
+        <div id="invCarb" class="row"></div>
+      </div>
+      <div class="day">
+        <div class="title">タンパク質</div>
+        <div id="invProtein" class="row"></div>
+      </div>
+      <div class="day">
+        <div class="title">ミネラル（野菜/果物など）</div>
+        <div id="invMineral" class="row"></div>
+      </div>
     </div>
 
-    <div class="muted" style="margin-top:8px;">
-      ・在庫は「週に使う食材だけ」を選んでください（選んだ食材だけで組みます）<br>
-      ・新食材は「平日1回目のみ」かつ「小さじ1」なので、基本は <b>タンパク/ミネラル</b>で設定するのがおすすめ（炭水化物はブロックが小さじ10だと小さじ1にできません）
-    </div>
-
-    <details open>
-      <summary>① 在庫セットを選ぶ（使う食材 / 新食材）</summary>
-      <div class="muted" style="margin-top:6px;">
-        「使う」にチェックした食材だけで1週間を回します。<br>
-        「新食材」にチェックしたものは、平日1回目に小さじ1だけ組み込みます（在庫から1ブロック消費）。
-      </div>
-
-      <div class="grid">
-        <div>
-          <div class="title">炭水化物</div>
-          <div id="invCarb"></div>
-        </div>
-        <div>
-          <div class="title">タンパク質</div>
-          <div id="invProtein"></div>
-        </div>
-        <div>
-          <div class="title">ミネラル（野菜/果物など）</div>
-          <div id="invMineral"></div>
-        </div>
-      </div>
-
-      <div class="row" style="margin-top:10px;">
-        <span class="muted">在庫ブロック数：</span>
-        <input id="blocksPerIng" type="number" min="1" step="1" value="8" style="width:90px;">
-        <button class="ghost smallBtn" id="selectMinimum">最低限だけ自動選択</button>
-        <button class="ghost smallBtn" id="clearAll">全部クリア</button>
-      </div>
-      <div class="muted" style="margin-top:6px;">
-        ※「最低限だけ自動選択」は、必要量を満たす“最小の種類数”を自動でチェックします（そこから増やしてOK）
-      </div>
-    </details>
-
-    <details>
-      <summary>② 家族共有（リンク/JSON）</summary>
-      <div class="muted" style="margin-top:6px;">
-        ・共有リンク：作成して家族に送る → 開くと同じ設定になります<br>
-        ・JSONコピー：LINE等でJSONを送って、相手側で貼り付け復元（将来的にインポートUIも追加できます）
-      </div>
-      <div class="muted" style="margin-top:6px;">共有データ（読み取り専用）</div>
-      <textarea id="shareBox" readonly></textarea>
-    </details>
-  <hr style="border:none;border-top:1px solid #e5e7eb;margin:12px 0;">
-
-  <h2>在庫（今週使う食材セット）</h2>
-  <div class="sub">チェックした食材だけで1週間を組みます（在庫は基本8ブロック）。</div>
-
-  <div style="display:grid;grid-template-columns:1fr;gap:10px;margin-top:10px;">
+    <h2 style="margin:14px 0 6px;">新食材（平日1回目に小さじ1）</h2>
+    <div class="sub">チェックした順に、月〜金の1回目に1つずつ入ります。</div>
     <div class="day">
-      <div class="title">炭水化物</div>
-      <div id="invCarb"></div>
+      <div id="newFoods" class="row"></div>
     </div>
-    <div class="day">
-      <div class="title">タンパク質</div>
-      <div id="invProtein"></div>
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+      <button id="shareLink" class="ghost" type="button">家族に共有リンク</button>
+      <button id="exportState" class="ghost" type="button">設定エクスポート</button>
+      <button id="importState" class="ghost" type="button">設定インポート</button>
     </div>
-    <div class="day">
-      <div class="title">ミネラル（野菜/果物など）</div>
-      <div id="invMineral"></div>
-    </div>
+
+    <h2 style="margin:14px 0 6px;">結果</h2>
+    <div id="out">設定して「1週間生成」を押してね</div>
   </div>
 
-  <h2 style="margin-top:14px;">新食材（平日1回目に小さじ1）</h2>
-  <div class="sub">チェックした順に、月〜金の1回目に1つずつ入ります。</div>
-  <div class="day">
-    <div id="newFoods"></div>
-  </div>
+  <script type="module">
+    import { FOOD_MASTER } from "./js/foodMaster.js";
+    import { generateWeeklyPlanWithInventory } from "./js/planner.js";
 
-  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
-    <button id="shareLink" class="ghost" type="button">家族に共有リンク</button>
-    <button id="exportState" class="ghost" type="button">設定エクスポート</button>
-    <button id="importState" class="ghost" type="button">設定インポート</button>
-  </div>
-    <h2 style="margin-top:14px;">結果</h2>
-    <div id="out">まだ生成していません</div>
+    const phaseEl = document.getElementById("phase");
+    const outEl = document.getElementById("out");
+    const genBtn = document.getElementById("gen");
 
-</div>
+    const invCarbEl = document.getElementById("invCarb");
+    const invProteinEl = document.getElementById("invProtein");
+    const invMineralEl = document.getElementById("invMineral");
+    const newFoodsEl = document.getElementById("newFoods");
 
-<script>
-  alert("通常scriptテスト");
-</script>
+    const shareBtn = document.getElementById("shareLink");
+    const exportBtn = document.getElementById("exportState");
+    const importBtn = document.getElementById("importState");
 
+    // エラーを画面に出す（モバイル用）
+    window.addEventListener("error", (e) => {
+      outEl.textContent = "JSエラー: " + (e?.message || "unknown");
+    });
+
+    const LS_KEY = "babyfood_planner_state_v1";
+
+    function esc(s){
+      return String(s ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
+    }
+
+    function b64EncodeUnicode(obj){
+      const json = JSON.stringify(obj);
+      return btoa(unescape(encodeURIComponent(json)));
+    }
+    function b64DecodeUnicode(s){
+      const json = decodeURIComponent(escape(atob(s)));
+      return JSON.parse(json);
+    }
+
+    function defaultState(){
+      return { phase: "中期", inv: { carb:{}, protein:{}, mineral:{} }, newQueue: [] };
+    }
+
+    function loadState(){
+      const hash = location.hash || "";
+      const m = hash.match(/state=([^&]+)/);
+      if (m && m[1]) {
+        try {
+          const imported = b64DecodeUnicode(m[1]);
+          localStorage.setItem(LS_KEY, JSON.stringify(imported));
+          history.replaceState(null, "", location.pathname + location.search);
+          return imported;
+        } catch (e) {}
+      }
+      try{
+        const raw = localStorage.getItem(LS_KEY);
+        if(!raw) return defaultState();
+        return { ...defaultState(), ...JSON.parse(raw) };
+      }catch(e){
+        return defaultState();
+      }
+    }
+
+    let state = loadState();
+    phaseEl.value = state.phase || "中期";
+
+    function saveState(){
+      localStorage.setItem(LS_KEY, JSON.stringify(state));
+    }
+
+    function categoryOfFactory(phase){
+      const m = FOOD_MASTER[phase];
+      const setCarb = new Set(m.carb);
+      const setPro = new Set(m.protein);
+      const setMin = new Set(m.mineral);
+      return (name)=>{
+        if(setCarb.has(name)) return "carb";
+        if(setPro.has(name)) return "protein";
+        if(setMin.has(name)) return "mineral";
+        return null;
+      };
+    }
+
+    function renderChecklist(container, items, checkedMap, onChange){
+      container.innerHTML = "";
+      items.forEach(name=>{
+        const label = document.createElement("label");
+        label.className = "chipLabel";
+
+        const cb = document.createElement("input");
+        cb.type="checkbox";
+        cb.checked = !!checkedMap[name];
+        cb.addEventListener("change", ()=>{
+          checkedMap[name] = cb.checked;
+          onChange();
+        });
+
+        const span = document.createElement("span");
+        span.textContent = name;
+
+        label.appendChild(cb);
+        label.appendChild(span);
+        container.appendChild(label);
+      });
+    }
+
+    function renderNewFoods(container, items, queue){
+      container.innerHTML = "";
+      items.forEach(name=>{
+        const label = document.createElement("label");
+        label.className = "chipLabel";
+
+        const cb = document.createElement("input");
+        cb.type="checkbox";
+        cb.checked = queue.includes(name);
+
+        cb.addEventListener("change", ()=>{
+          if(cb.checked){
+            if(!queue.includes(name)) queue.push(name);
+          }else{
+            const idx = queue.indexOf(name);
+            if(idx>=0) queue.splice(idx,1);
+          }
+          saveState();
+        });
+
+        const span = document.createElement("span");
+        span.textContent = name;
+
+        label.appendChild(cb);
+        label.appendChild(span);
+        container.appendChild(label);
+      });
+    }
+
+    function rebuildUI(){
+      const phase = phaseEl.value;
+      const master = FOOD_MASTER[phase];
+
+      state.inv ||= { carb:{}, protein:{}, mineral:{} };
+      state.inv.carb ||= {};
+      state.inv.protein ||= {};
+      state.inv.mineral ||= {};
+      state.newQueue ||= [];
+
+      renderChecklist(invCarbEl, master.carb, state.inv.carb, ()=>{ saveState(); rebuildUI(); });
+      renderChecklist(invProteinEl, master.protein, state.inv.protein, ()=>{ saveState(); rebuildUI(); });
+      renderChecklist(invMineralEl, master.mineral, state.inv.mineral, ()=>{ saveState(); rebuildUI(); });
+
+      // 新食材候補：在庫で選んでいないもの
+      const chosen = new Set([
+        ...Object.keys(state.inv.carb).filter(k=>state.inv.carb[k]),
+        ...Object.keys(state.inv.protein).filter(k=>state.inv.protein[k]),
+        ...Object.keys(state.inv.mineral).filter(k=>state.inv.mineral[k])
+      ]);
+
+      const newCandidates = [
+        ...master.carb.filter(x=>!chosen.has(x)),
+        ...master.protein.filter(x=>!chosen.has(x)),
+        ...master.mineral.filter(x=>!chosen.has(x))
+      ];
+
+      // queueの中で候補から外れたものを除去
+      state.newQueue = state.newQueue.filter(x => newCandidates.includes(x));
+
+      renderNewFoods(newFoodsEl, newCandidates, state.newQueue);
+
+      state.phase = phase;
+      saveState();
+    }
+
+    function renderPlan(result){
+      const warnings = (result.warnings && result.warnings.length) ? result.warnings : [];
+      const plan = result.plan || [];
+
+      const byDay = new Map();
+      for (const p of plan){
+        if(!byDay.has(p.day)) byDay.set(p.day, []);
+        byDay.get(p.day).push(p);
+      }
+
+      let html = "";
+
+      if (warnings.length){
+        html += `<div class="day"><div class="title">Warnings</div><ul class="list">` +
+          warnings.map(w => `<li>${esc(w)}</li>`).join("") +
+          `</ul></div>`;
+      }
+
+      for (const [day, meals] of byDay.entries()){
+        html += `<div class="day"><div class="title">${esc(day)}曜日</div>`;
+        for (const m of meals){
+          const okBadge = m.ok ? `<span class="badge ok">OK</span>` : `<span class="badge warn">要確認</span>`;
+          const newBadge = m.newFood ? `<span class="badge warn">新:${esc(m.newFood)} 小さじ1</span>` : "";
+
+          const toLine = (arr, label) => {
+            const items = (arr || []).map(x => `${x.name}×${x.blocks}ブロック${x.isNew ? "(新)" : ""}`).join("、") || "—";
+            return `<div class="sub">${label}: ${esc(items)}</div>`;
+          };
+
+          html += `
+            <div class="meal">
+              <div>${okBadge}${newBadge}<b>${esc(m.meal)}回目：</b>${esc(m.menuName)}</div>
+              <div class="sub">目安：炭水化物${m.targetsTsp.carb} / タンパク${m.targetsTsp.protein} / ミネラル${m.targetsTsp.mineral}（小さじ）</div>
+              ${toLine(m.blocks.carb, "炭水化物")}
+              ${toLine(m.blocks.protein, "タンパク")}
+              ${toLine(m.blocks.mineral, "ミネラル")}
+            </div>
+          `;
+        }
+        html += `</div>`;
+      }
+
+      // 余り在庫
+      html += `<div class="day"><div class="title">余り在庫</div>`;
+      const lf = result.leftovers || {};
+      const lfLine = (k, label) => {
+        const arr = lf[k] || [];
+        const s = arr.length ? arr.map(x => `${x.name}(${x.remainBlocks})`).join("、") : "なし";
+        return `<div class="sub">${label}: ${esc(s)}</div>`;
+      };
+      html += lfLine("carb","炭水化物");
+      html += lfLine("protein","タンパク");
+      html += lfLine("mineral","ミネラル");
+      html += `</div>`;
+
+      outEl.innerHTML = html;
+    }
+
+    phaseEl.addEventListener("change", ()=>{
+      rebuildUI();
+      outEl.textContent = "設定して「1週間生成」を押してね";
+    });
+
+    genBtn.addEventListener("click", ()=>{
+      const phase = phaseEl.value;
+      const categoryOf = categoryOfFactory(phase);
+
+      const invOverride = {
+        carb: Object.keys(state.inv.carb).filter(k=>state.inv.carb[k]).map(name=>({name, blocks:8})),
+        protein: Object.keys(state.inv.protein).filter(k=>state.inv.protein[k]).map(name=>({name, blocks:8})),
+        mineral: Object.keys(state.inv.mineral).filter(k=>state.inv.mineral[k]).map(name=>({name, blocks:8}))
+      };
+
+      const result = generateWeeklyPlanWithInventory({
+        phase,
+        inventoryOverride: invOverride,
+        newFoodRule: {
+          enabled: true,
+          weekdayOnly: true,
+          mealNo: 1,
+          tsp: 1,
+          queue: state.newQueue,
+          categoryOf
+        }
+      });
+
+      renderPlan(result);
+    });
+
+    shareBtn.addEventListener("click", async ()=>{
+      const token = b64EncodeUnicode(state);
+      const url = location.origin + location.pathname + "#state=" + token;
+
+      try{
+        if (navigator.share) {
+          await navigator.share({ title:"離乳食プラン設定", url });
+        } else {
+          await navigator.clipboard.writeText(url);
+          alert("共有リンクをコピーしました");
+        }
+      }catch(e){
+        prompt("このリンクをコピーして家族に送ってね", url);
+      }
+    });
+
+    exportBtn.addEventListener("click", async ()=>{
+      const json = JSON.stringify(state, null, 2);
+      try{
+        await navigator.clipboard.writeText(json);
+        alert("設定JSONをコピーしました");
+      }catch(e){
+        prompt("このJSONをコピーして保存してね", json);
+      }
+    });
+
+    importBtn.addEventListener("click", ()=>{
+      const txt = prompt("設定JSONを貼り付けてOKを押してね");
+      if(!txt) return;
+      try{
+        const obj = JSON.parse(txt);
+        state = { ...defaultState(), ...obj };
+        phaseEl.value = state.phase || "中期";
+        saveState();
+        rebuildUI();
+        alert("インポートしました");
+      }catch(e){
+        alert("JSONが読めませんでした");
+      }
+    });
+
+    // 初期描画
+    rebuildUI();
+  </script>
 </body>
 </html>
