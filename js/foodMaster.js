@@ -1,6 +1,4 @@
 // js/foodMaster.js
-// ユーザー提供リストをフェーズごとに「追加分」を積み上げて展開。
-// 3カテゴリ（carb/protein/mineral）に分類し、調味料/油などは extras に分離。
 
 const INITIAL = {
   carb: [
