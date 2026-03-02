@@ -22,7 +22,6 @@
     .row{display:flex;gap:8px;flex-wrap:wrap}
     hr{border:none;border-top:1px solid #e5e7eb;margin:12px 0}
 
-    /* Accordion */
     details{background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:10px}
     summary{cursor:pointer;list-style:none;font-weight:900;display:flex;align-items:center;justify-content:space-between}
     summary::-webkit-details-marker{display:none}
@@ -30,7 +29,6 @@
     details[open] summary{margin-bottom:8px}
     .accBody{padding-top:6px}
 
-    /* Generate bar */
     .genBar{
       position: sticky;
       bottom: 10px;
@@ -71,34 +69,19 @@
     <div class="sub">チェックした食材だけで1週間を組みます（在庫は基本8ブロック）。</div>
 
     <div style="display:grid;grid-template-columns:1fr;gap:10px;margin-top:10px;">
-      <details id="accCarb" open>
-        <summary>
-          <span>炭水化物</span>
-          <span class="sumRight" id="countCarb">0件選択</span>
-        </summary>
-        <div class="accBody">
-          <div id="invCarb" class="row"></div>
-        </div>
+      <details open>
+        <summary><span>炭水化物</span><span class="sumRight" id="countCarb">0件選択</span></summary>
+        <div class="accBody"><div id="invCarb" class="row"></div></div>
       </details>
 
-      <details id="accProtein">
-        <summary>
-          <span>タンパク質</span>
-          <span class="sumRight" id="countProtein">0件選択</span>
-        </summary>
-        <div class="accBody">
-          <div id="invProtein" class="row"></div>
-        </div>
+      <details>
+        <summary><span>タンパク質</span><span class="sumRight" id="countProtein">0件選択</span></summary>
+        <div class="accBody"><div id="invProtein" class="row"></div></div>
       </details>
 
-      <details id="accMineral">
-        <summary>
-          <span>ミネラル（野菜/果物など）</span>
-          <span class="sumRight" id="countMineral">0件選択</span>
-        </summary>
-        <div class="accBody">
-          <div id="invMineral" class="row"></div>
-        </div>
+      <details>
+        <summary><span>ミネラル（野菜/果物など）</span><span class="sumRight" id="countMineral">0件選択</span></summary>
+        <div class="accBody"><div id="invMineral" class="row"></div></div>
       </details>
     </div>
 
@@ -107,17 +90,11 @@
     <h2 style="margin:0 0 6px;">新食材（平日1回目に小さじ1）</h2>
     <div class="sub">在庫で選んでいない食材から選べます。チェック順に、月〜金の1回目に1つずつ入ります。</div>
 
-    <details id="accNewFoods">
-      <summary>
-        <span>新食材候補</span>
-        <span class="sumRight" id="countNew">0件選択</span>
-      </summary>
-      <div class="accBody">
-        <div id="newFoods" class="row"></div>
-      </div>
+    <details>
+      <summary><span>新食材候補</span><span class="sumRight" id="countNew">0件選択</span></summary>
+      <div class="accBody"><div id="newFoods" class="row"></div></div>
     </details>
 
-    <!-- 生成ボタン：チェックの後に押せる位置 -->
     <div class="genBar">
       <div class="genBarInner">
         <button id="gen" class="genBtn">この設定で1週間生成</button>
@@ -152,7 +129,6 @@
     const exportBtn = document.getElementById("exportState");
     const importBtn = document.getElementById("importState");
 
-    // モバイル用：エラーを画面に出す
     window.addEventListener("error", (e) => {
       outEl.textContent = "JSエラー: " + (e?.message || "unknown");
     });
@@ -321,7 +297,6 @@
       state.inv.mineral ||= {};
       state.newQueue ||= [];
 
-      // チェックごとにUI全再描画しない（スクロール飛び防止）
       const onInvChange = () => { saveState(); updateCounts(); rebuildNewCandidates(); };
 
       renderChecklist(invCarbEl, master.carb, state.inv.carb, onInvChange);
@@ -347,7 +322,7 @@
 
       let html = "";
 
-      // ✅ 不足ブロック表示（カテゴリ合計）
+      // 不足ブロック表示（カテゴリ合計）
       if (result.requiredBlocksPerWeek && result.availableBlocks && result.shortageBlocks) {
         const r = result.requiredBlocksPerWeek;
         const a = result.availableBlocks;
@@ -372,7 +347,20 @@
             ${line("炭水化物", "carb")}
             ${line("タンパク質", "protein")}
             ${line("ミネラル", "mineral")}
-            <div class="sub">※不足があるカテゴリは、チェックする食材を増やすと埋まりやすくなります。</div>
+            <div class="sub">※余りがあるのに不足が出ないように、新食材の在庫も計算に含めています。</div>
+          </div>
+        `;
+      }
+
+      // ミネラルミックス情報
+      if (result.mineralMixMeta) {
+        const mm = result.mineralMixMeta;
+        html += `
+          <div class="day">
+            <div class="title">今週のミネラルミックス</div>
+            <div class="sub"><b>${esc(mm.vegMixName)}</b></div>
+            <div class="sub"><b>${esc(mm.fruitMixName)}</b></div>
+            <div class="sub">※この2つを冷凍して、1週間同じミックスを使う想定です。</div>
           </div>
         `;
       }
@@ -389,8 +377,13 @@
           const okBadge = m.ok ? `<span class="badge ok">OK</span>` : `<span class="badge warn">要確認</span>`;
           const newBadge = m.newFood ? `<span class="badge warn">新:${esc(m.newFood)} 小さじ1</span>` : "";
 
-          const toLine = (arr, label) => {
-            const items = (arr || []).map(x => `${x.name}×${x.blocks}ブロック${x.isNew ? "(新)" : ""}`).join("、") || "—";
+          const toLine = (arr, label, mode) => {
+            const items = (arr || []).map(x => {
+              if(mode==="tsp"){
+                return `${x.name} 小さじ${x.blocks}${x.isNew ? "(新)" : ""}`;
+              }
+              return `${x.name}×${x.blocks}ブロック${x.isNew ? "(新)" : ""}`;
+            }).join("、") || "—";
             return `<div class="sub">${label}: ${esc(items)}</div>`;
           };
 
@@ -398,9 +391,9 @@
             <div class="meal">
               <div>${okBadge}${newBadge}<b>${esc(m.meal)}回目：</b>${esc(m.menuName)}</div>
               <div class="sub">目安：炭水化物${m.targetsTsp.carb} / タンパク${m.targetsTsp.protein} / ミネラル${m.targetsTsp.mineral}（小さじ）</div>
-              ${toLine(m.blocks.carb, "炭水化物")}
-              ${toLine(m.blocks.protein, "タンパク")}
-              ${toLine(m.blocks.mineral, "ミネラル")}
+              ${toLine(m.blocks.carb, "炭水化物", "blocks")}
+              ${toLine(m.blocks.protein, "タンパク", "blocks")}
+              ${toLine(m.blocks.mineral, "ミネラル（野菜/果物ミックス）", "tsp")}
             </div>
           `;
         }
@@ -410,14 +403,17 @@
       // 余り在庫
       html += `<div class="day"><div class="title">余り在庫</div>`;
       const lf = result.leftovers || {};
-      const lfLine = (k, label) => {
+      const lfLine = (k, label, mode) => {
         const arr = lf[k] || [];
-        const s = arr.length ? arr.map(x => `${x.name}(${x.remainBlocks})`).join("、") : "なし";
+        const s = arr.length ? arr.map(x => {
+          if(mode==="tsp") return `${x.name}(小さじ${x.remainBlocks})`;
+          return `${x.name}(${x.remainBlocks})`;
+        }).join("、") : "なし";
         return `<div class="sub">${label}: ${esc(s)}</div>`;
       };
-      html += lfLine("carb","炭水化物");
-      html += lfLine("protein","タンパク");
-      html += lfLine("mineral","ミネラル");
+      html += lfLine("carb","炭水化物","blocks");
+      html += lfLine("protein","タンパク","blocks");
+      html += lfLine("mineral","ミネラル（ミックス在庫）","tsp");
       html += `</div>`;
 
       outEl.innerHTML = html;
