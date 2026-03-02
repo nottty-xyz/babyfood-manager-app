@@ -87,6 +87,28 @@ input, select, textarea{
 @media (min-width: 420px){
   #allergenBox{ grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
+.allergenGrid{
+  display:grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap:8px;
+  margin-top:6px;
+}
+@media (min-width: 420px){
+  .allergenGrid{ grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+.allergenGrid label{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:10px 12px;
+  border:1px solid var(--border);
+  border-radius:14px;
+  background:#fff;
+  font-size:12px;
+}
+.allergenGrid input[type="checkbox"]{
+  width:20px; height:20px;
+}
 </style>
 </head>
 <body>
@@ -171,10 +193,10 @@ input, select, textarea{
           <input id="times" type="number" min="0" step="1" value="0" />
         </div>
         <div style="flex:2; min-width:240px;">
-          <label>含むアレルゲン</label>
-          <select id="foodAllergens" multiple></select>
-          <div class="muted">複数選択：PCはCtrl/⌘、スマホは長押し等</div>
-        </div>
+  <label>含むアレルゲン</label>
+  <div id="foodAllergenBox" class="allergenGrid"></div>
+  <div class="muted">スマホでも押しやすいチェック式</div>
+</div>
       </div>
 
       <div style="margin-top:8px;">
@@ -292,7 +314,7 @@ const firstDateEl = el("firstDate");
 const statusEl = el("status");
 const timesEl = el("times");
 const memoEl = el("memo");
-const foodAllergensEl = el("foodAllergens");
+const foodAllergenBoxEl = el("foodAllergenBox");
 
 const logDateEl = el("logDate");
 const logFoodEl = el("logFood");
@@ -333,14 +355,21 @@ function initAllergens(){
     box.appendChild(wrap);
   });
 
-  // 食材用 multiple select
-  foodAllergensEl.innerHTML = "";
-  ALLERGENS.forEach(a=>{
-    const opt = document.createElement("option");
-    opt.value = a;
-    opt.textContent = a;
-    foodAllergensEl.appendChild(opt);
-  });
+  // 食材用チェックグリッド
+  if(foodAllergenBoxEl){
+    foodAllergenBoxEl.innerHTML = "";
+    ALLERGENS.forEach(a=>{
+      const wrap = document.createElement("label");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.value = a;
+      const t = document.createElement("span");
+      t.textContent = a;
+      wrap.appendChild(cb);
+      wrap.appendChild(t);
+      foodAllergenBoxEl.appendChild(wrap);
+    });
+  }
 }
 
 function setDefaults(){
@@ -485,7 +514,9 @@ el("addFoodBtn").addEventListener("click", ()=>{
   const name = (foodNameEl.value||"").trim();
   if(!name){ alert("食材名を入れてね"); return; }
 
-  const selectedAllergens = Array.from(foodAllergensEl.selectedOptions).map(o=>o.value);
+const selectedAllergens = foodAllergenBoxEl
+  ? Array.from(foodAllergenBoxEl.querySelectorAll('input[type="checkbox"]:checked')).map(x=>x.value)
+  : [];
 
   const existing = state.foods.find(f=>f.name===name);
   if(existing && !confirm("同名の食材があります。上書き編集しますか？")) return;
@@ -516,7 +547,9 @@ el("clearFormBtn").addEventListener("click", ()=>{
   statusEl.value="未導入";
   timesEl.value="0";
   memoEl.value="";
-  Array.from(foodAllergensEl.options).forEach(o=>o.selected=false);
+if(foodAllergenBoxEl){
+  Array.from(foodAllergenBoxEl.querySelectorAll('input[type="checkbox"]'))
+    .forEach(cb => cb.checked = false);
 });
 
 listEl.addEventListener("click", (e)=>{
@@ -546,7 +579,9 @@ listEl.addEventListener("click", (e)=>{
     memoEl.value = f.memo || "";
     // allergens select
     const set = new Set(f.allergens||[]);
-    Array.from(foodAllergensEl.options).forEach(o=> o.selected = set.has(o.value));
+if(foodAllergenBoxEl){
+  Array.from(foodAllergenBoxEl.querySelectorAll('input[type="checkbox"]'))
+    .forEach(cb => cb.checked = set.has(cb.value));
     // スクロール
     window.scrollTo({top:0, behavior:"smooth"});
   }
