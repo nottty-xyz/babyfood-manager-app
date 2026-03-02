@@ -17,7 +17,6 @@ export const DEFAULT_CONFIG = {
   },
 
   // 1ブロックが何小さじか
-  // 現状：炭水化物は10小さじ=1ブロック / タンパク&ミネラルは1小さじ=1ブロック
   blockSizeTsp: {
     carb: 10,
     protein: 1,
@@ -36,10 +35,10 @@ export const DEFAULT_CONFIG = {
     vegTspBase: 4
   },
 
-  // 在庫が足りるなら「種類制限」で不足にしない（必要なら全部使う）
+  // 在庫が足りるなら「種類制限」を自動で緩めて全部使って埋める
   autoRelaxMaxKinds: true,
 
-  // 連続同じ食材を避ける（不足防止のため、在庫が足りる限りは回避、足りないなら使う）
+  // 連続同じ食材を避ける（不足を防ぐため、避けられない場合は使う）
   avoidRepeat: true
 };
 
@@ -95,10 +94,12 @@ function scoreItem(item, recentlyUsedSet, avoidRepeat){
   return s;
 }
 
-// ★「足りるなら全部使って埋める」割当（不足があるなら partial で返す）
+// ★「足りるなら全部使って埋める」割当（不足があるなら missing に残す）
 function allocateUpTo(inv, blocksNeeded, maxKinds, opts){
   const { recentlyUsedSet, avoidRepeat, autoRelaxMaxKinds } = opts;
-  const kindsLimit = autoRelaxMaxKinds ? inv.filter(x=>x.remain>0).length : maxKinds;
+
+  const positiveCount = inv.filter(x=>x.remain>0).length;
+  const kindsLimit = autoRelaxMaxKinds ? positiveCount : maxKinds;
 
   let need = blocksNeeded;
   const picks = [];
@@ -119,7 +120,7 @@ function allocateUpTo(inv, blocksNeeded, maxKinds, opts){
     }
   }
 
-  return { picks, missing: need }; // missing=0なら埋まった
+  return { picks, missing: need };
 }
 
 function menuName(carbPicks, proteinPicks, mineralPicks, phase){
@@ -157,8 +158,8 @@ const FRUITS = new Set([
 
 function isFruit(name){ return FRUITS.has(name); }
 
-// ミネラル在庫（個別食材）→ ミックス2アイテムに圧縮（1週間固定）
-function buildMineralMixInventory(mineralInv, cfg){
+// ミネラル在庫（個別）→ ミックス2アイテムに圧縮（1週間固定）
+function buildMineralMixInventory(mineralInv){
   const veg = [];
   const fruit = [];
   for(const it of mineralInv){
@@ -187,7 +188,7 @@ function buildMineralMixInventory(mineralInv, cfg){
   return { mineralMixInv: inv, mineralMixMeta: meta };
 }
 
-// ===== 週の必要ブロック（表示用）=====
+// ===== 週の必要量（表示用） =====
 function calcRequiredBlocksPerWeek(cfg){
   const meals = totalMeals(cfg);
   const req = { carb:0, protein:0, mineral:0 };
@@ -223,7 +224,7 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
   };
 
   // ミネラルをミックス化（固定）
-  const { mineralMixInv, mineralMixMeta } = buildMineralMixInventory(invRaw.mineral, cfg);
+  const { mineralMixInv, mineralMixMeta } = buildMineralMixInventory(invRaw.mineral);
 
   const inv = {
     carb: invRaw.carb,
@@ -231,11 +232,12 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
     mineral: mineralMixInv
   };
 
+  // 新食材ルール
   const newRule = cfg.newFoodRule || { enabled:false };
   const newQueue = Array.isArray(newRule.queue) ? [...newRule.queue] : [];
   const categoryOf = newRule.categoryOf || (()=>null);
 
-  // ★新食材在庫（8ブロック）…不足計算に含めるために「追加在庫」を記録
+  // ★新食材在庫（8ブロック）…余り表示用 + available 表示用
   const newFoodStock = new Map(); // key: `${cat}::${name}` -> remain
   const newFoodAddedBlocks = { carb:0, protein:0, mineral:0 };
 
@@ -279,11 +281,10 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
     newFoodAddedBlocks.mineral += cfg.blocksPerIngredient;
   };
 
-  // ===== 生成（ここで「実欠損」を集計する）=====
+  // ===== 生成（不足は「実欠損」で集計）=====
   const plan = [];
   let recent = { carb:new Set(), protein:new Set(), mineral:new Set() };
 
-  // ★不足は「実際に埋められなかった量」で集計（これが矛盾修正の本体）
   const missingSum = { carb:0, protein:0, mineral:0 };
 
   const meals = totalMeals(cfg);
@@ -326,7 +327,7 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
         }
       }
 
-      // 炭水化物/タンパク割当（足りるなら全部使う）
+      // 炭水化物/タンパク：足りるなら全部使って埋める
       const carbAlloc = allocateUpTo(inv.carb, need.carb, cfg.maxKindsPerMeal.carb, {
         recentlyUsedSet: recent.carb, avoidRepeat: cfg.avoidRepeat, autoRelaxMaxKinds: cfg.autoRelaxMaxKinds
       });
@@ -337,7 +338,7 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
       if(carbAlloc.missing>0) missingSum.carb += carbAlloc.missing;
       if(proAlloc.missing>0) missingSum.protein += proAlloc.missing;
 
-      // ミネラル割当（野菜4＋果物残り、ただし片方足りないならもう片方で合計埋める）
+      // ミネラル：野菜4＋果物残り、ただし片方足りないならもう片方で合計埋める
       const vegBase = cfg.mineralSplit?.vegTspBase ?? 4;
       let vegNeed = Math.min(need.mineral, vegBase);
       let fruitNeed = Math.max(0, need.mineral - vegNeed);
@@ -348,7 +349,7 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
       const mineralPicks = [];
       let remainingTotal = need.mineral;
 
-      // まず野菜枠
+      // 野菜枠
       if(vegNeed>0 && vegItem && vegItem.remain>0){
         const use = Math.min(vegItem.remain, vegNeed);
         vegItem.remain -= use;
@@ -356,7 +357,7 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
         remainingTotal -= use;
       }
 
-      // 次に果物枠
+      // 果物枠
       if(fruitNeed>0 && fruitItem && fruitItem.remain>0){
         const use = Math.min(fruitItem.remain, fruitNeed);
         fruitItem.remain -= use;
@@ -364,13 +365,11 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
         remainingTotal -= use;
       }
 
-      // ★合計がまだ足りないなら、残ってる方から埋める（ここが「余りがあるなら不足にしない」）
+      // 合計が足りないなら、残ってる方で埋める（合計が足りるなら不足にしない）
       if(remainingTotal>0){
         const pool = [];
         if(vegItem && vegItem.remain>0) pool.push(vegItem);
         if(fruitItem && fruitItem.remain>0) pool.push(fruitItem);
-
-        // 残量が多い方から使う
         pool.sort((a,b)=> b.remain - a.remain);
 
         for(const it of pool){
@@ -398,7 +397,6 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
       }
 
       const ok = (carbAlloc.missing===0 && proAlloc.missing===0 && remainingTotal===0);
-
       const name = menuName(carbAlloc.picks, proAlloc.picks, mineralPicks, cfg.phase);
 
       plan.push({
@@ -421,7 +419,7 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
     }
   }
 
-  // leftovers
+  // leftovers（余り在庫）
   const leftovers = {
     carb: invRaw.carb.map(x=>({name:x.name, remainBlocks:x.remain})).filter(x=>x.remainBlocks>0),
     protein: invRaw.protein.map(x=>({name:x.name, remainBlocks:x.remain})).filter(x=>x.remainBlocks>0),
@@ -430,9 +428,9 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
 
   // carb/protein 新食材在庫（残り7など）を leftovers に追加
   for(const [key, remain] of newFoodStock.entries()){
-    const [cat, name] = key.split("::");
+    const [cat, nm] = key.split("::");
     if(remain > 0){
-      leftovers[cat].push({ name, remainBlocks: remain, isNew:true });
+      leftovers[cat].push({ name: nm, remainBlocks: remain, isNew:true });
     }
   }
 
@@ -440,9 +438,8 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
   leftovers.protein.sort((a,b)=> a.name.localeCompare(b.name, "ja"));
   leftovers.mineral.sort((a,b)=> a.name.localeCompare(b.name, "ja"));
 
-  // ===== 表示用：必要/在庫/不足（★不足は missingSum で出す）=====
+  // 表示用：必要/在庫（参考）
   const requiredBlocksPerWeek = calcRequiredBlocksPerWeek(cfg);
-
   const baseAvailable = sumAvailableBlocks(cfg.inventoryOverride || {});
   const availableBlocks = {
     carb: baseAvailable.carb + newFoodAddedBlocks.carb,
@@ -450,14 +447,14 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
     mineral: baseAvailable.mineral + newFoodAddedBlocks.mineral
   };
 
-  // ★不足＝「実際に埋められなかった欠損」なので、余りがあるのに不足は出ない
+  // ★不足は実欠損
   const shortageBlocks = {
     carb: missingSum.carb,
     protein: missingSum.protein,
     mineral: missingSum.mineral
   };
 
-  const warnings = [];
+  // warnings（ここは二重宣言しない！）
   if(shortageBlocks.carb>0) warnings.push(`炭水化物が不足：あと ${shortageBlocks.carb} ブロック必要`);
   if(shortageBlocks.protein>0) warnings.push(`タンパク質が不足：あと ${shortageBlocks.protein} ブロック必要`);
   if(shortageBlocks.mineral>0) warnings.push(`ミネラルが不足：あと ${shortageBlocks.mineral}（小さじ相当）必要`);
@@ -468,7 +465,7 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
     plan,
     leftovers,
     warnings,
-    errors: [],
+    errors,
     requiredBlocksPerWeek,
     availableBlocks,
     shortageBlocks,
