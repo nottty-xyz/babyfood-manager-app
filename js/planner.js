@@ -1,5 +1,7 @@
 // js/planner.js
-// v14
+// v15
+//
+// ✅ 2回食（mealsPerDay=2）なので月曜も2回目がある
 //
 // ✅ 固定ブロック
 // - 炭水化物: 1ブロック=小さじ10
@@ -8,16 +10,16 @@
 // - 野菜ミックス: 1ブロック=小さじ3
 // - 果物ミックス: 1ブロック=小さじ2
 //
-// ✅ 新食材
-// - (新初回) は「平日1回目」に1つだけ、必ず小さじ1
-// - その食では同じ新食材を追加で使わない（除外）
-// - それ以外の新食材は在庫割当で普通に使用OKだが、表示は必ず(新2回目以降)
+// ✅ 新食材の正しい数え方（重要）
+// - 「平日1回目」にだけ “新初回(小さじ1)” を1つ導入
+// - 導入されるまでは、その新食材は週内で一切出ない（在庫割当から除外）
+// - 導入されたら、その後の登場は全部「(新2回目以降)」
 //
 // ✅ ミネラル
-// - ミックス（野菜/果物）は「チェック在庫のみ」で構成固定（新食材は混ぜない）
-// - 単品（新食材など）を優先消費するが、単品だけで枠を埋めない（偏り防止）
+// - ミックスはチェック在庫のみで固定（新食材は混ぜない）
+// - 単品を優先消費するが、単品だけで埋めない（偏り防止）
 //
-// ✅ 返却：picksは {name,tsp,blocks}（isNew等は返さない）
+// ✅ 返却：{name,tsp,blocks}（isNewなどは返さない）
 
 export const DEFAULT_CONFIG = {
   phase: "中期",
@@ -64,7 +66,7 @@ function mealTargets(cfg, i){
   return { carb: cfg.tspPerMeal.carb, protein, mineral };
 }
 
-// ===== 果物判定（あなたの食材リスト前提） =====
+// ===== 果物判定 =====
 const FRUITS = new Set([
   "りんご","いちご","メロン","バナナ","すいか","梨","みかん","桃",
   "キウイ","ぶどう",
@@ -84,7 +86,6 @@ function ensureInventoryItem(invArr, name, tspPerBlock, defaultBlocks){
   let item = invArr.find(x => x.name === name);
   if(!item){
     item = { name, remainTsp: defaultBlocks * tspPerBlock };
-    // 新食材は使い切りたいので先頭へ
     invArr.unshift(item);
   }
   return item;
@@ -195,7 +196,7 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
     carb: makeInventoryFromOverride(cfg.inventoryOverride?.carb, tspPerBlock.carb, cfg.blocksPerIngredient),
     protein: makeInventoryFromOverride(cfg.inventoryOverride?.protein, tspPerBlock.protein, cfg.blocksPerIngredient),
     mineralBase: makeInventoryFromOverride(cfg.inventoryOverride?.mineral, tspPerBlock.mineralSingle, cfg.blocksPerIngredient),
-    mineralSingles: [] // ミネラル新食材など（ミックスに入れない）
+    mineralSingles: []
   };
 
   // 新食材ルール
@@ -204,11 +205,21 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
   const newQueue = Array.isArray(rule.queue) ? [...rule.queue].slice(0,5) : [];
   let newPtr = 0;
 
-  // 「この食材は新食材」判定（在庫割当に出てもOK、ただし表示は(新2回目以降)）
-  const newByCat = { carb:new Set(), protein:new Set(), mineral:new Set() };
+  // 新食材セット（カテゴリごと）
+  const newByCat = {
+    carb: new Set(),
+    protein: new Set(),
+    mineral: new Set()
+  };
 
-  // ★新食材は「週の在庫」として最初に追加しておく（2回目以降で使えるようにする）
-  // ただしミネラル新食材はミックスに入れないので mineralSingles へ
+  // ★導入済み（初回を終えた）新食材だけ、在庫割当で使ってよい
+  const introduced = {
+    carb: new Set(),
+    protein: new Set(),
+    mineral: new Set()
+  };
+
+  // 新食材を週在庫として追加（導入前でも在庫は持つ）
   for(const nf of newQueue){
     const cat = categoryOf(nf);
     if(cat === "carb"){
@@ -241,10 +252,25 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
         mineralTsp: targets.mineral
       };
 
-      // 初回のその食で「同じ新食材」を追加で使わない
-      const exclude = { carb:new Set(), protein:new Set(), mineralSingles:new Set() };
+      // 除外（この食で使わない）
+      const exclude = {
+        carb: new Set(),
+        protein: new Set(),
+        mineralSingles: new Set()
+      };
 
-      // ★この食の(新初回)はこれだけ（1つのみ）
+      // ★導入前の新食材は在庫割当から除外（初回が来るまで出さない）
+      for(const name of newByCat.carb){
+        if(!introduced.carb.has(name)) exclude.carb.add(name);
+      }
+      for(const name of newByCat.protein){
+        if(!introduced.protein.has(name)) exclude.protein.add(name);
+      }
+      for(const name of newByCat.mineral){
+        if(!introduced.mineral.has(name)) exclude.mineralSingles.add(name);
+      }
+
+      // ★この食の(新初回)は1つだけ
       let newLine = null; // { category, baseName, name, tsp }
 
       const doNew =
@@ -263,28 +289,32 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
           const firstTsp = 1; // ★必ず小さじ1
           newLine = { category: cat, baseName: nf, name: labelNewFirst(nf), tsp: 1 };
 
+          // 導入したので “解禁”
+          introduced[cat].add(nf);
+
+          // この食では同じ新食材を追加で使わない（初回以外で増えないように）
+          if(cat === "carb") exclude.carb.add(nf);
+          if(cat === "protein") exclude.protein.add(nf);
+          if(cat === "mineral") exclude.mineralSingles.add(nf);
+
+          // 初回分だけ在庫から小さじ1消費
           if(cat === "carb"){
             const it = ensureInventoryItem(inv.carb, nf, tspPerBlock.carb, cfg.blocksPerIngredient);
             it.remainTsp = Math.max(0, it.remainTsp - firstTsp);
             need.carbTsp = Math.max(0, need.carbTsp - firstTsp);
-            exclude.carb.add(nf);
-
           }else if(cat === "protein"){
             const it = ensureInventoryItem(inv.protein, nf, tspPerBlock.protein, cfg.blocksPerIngredient);
             it.remainTsp = Math.max(0, it.remainTsp - firstTsp);
             need.proteinTsp = Math.max(0, need.proteinTsp - firstTsp);
-            exclude.protein.add(nf);
-
           }else if(cat === "mineral"){
             const it = ensureInventoryItem(inv.mineralSingles, nf, tspPerBlock.mineralSingle, cfg.blocksPerIngredient);
             it.remainTsp = Math.max(0, it.remainTsp - firstTsp);
             need.mineralTsp = Math.max(0, need.mineralTsp - firstTsp);
-            exclude.mineralSingles.add(nf);
           }
         }
       }
 
-      // ===== 炭水化物（在庫割当で出た新食材は必ず(新2回目以降)）=====
+      // ===== 炭水化物 =====
       const carbAlloc = allocateTsp(inv.carb, need.carbTsp, exclude.carb);
       const carbPicks = carbAlloc.picks.map(p => {
         const isNew = newByCat.carb.has(p.name);
@@ -308,7 +338,7 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
       const minMix = Math.min(cfg.mineralSinglesPolicy.minMixTsp, mineralNeed);
       const singleAllowed = Math.max(0, Math.min(maxSingle, mineralNeed - minMix));
 
-      // (A) 単品を先に少し（新食材が出ても(新2回目以降)）
+      // (A) 単品を先に少し
       if(singleAllowed > 0){
         const s1 = allocateTsp(inv.mineralSingles, singleAllowed, exclude.mineralSingles);
         for(const p of s1.picks){
@@ -338,10 +368,9 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
         mineralNeed = s2.missingTsp;
       }
 
-      // ★newLine を先頭へ（これが唯一の(新初回)）
+      // ★newLine を先頭へ（この食で唯一の(新初回)）
       if(newLine){
         const addPick = (blockTsp) => ({ name: newLine.name, tsp: 1, blocks: 1 / blockTsp });
-
         if(newLine.category === "carb") carbPicks.unshift(addPick(tspPerBlock.carb));
         if(newLine.category === "protein") proteinPicks.unshift(addPick(tspPerBlock.protein));
         if(newLine.category === "mineral") mineralPicks.unshift(addPick(tspPerBlock.mineralSingle));
@@ -405,6 +434,6 @@ export function generateWeeklyPlanWithInventory(customConfig = {}){
     warnings,
     errors,
     shortageBlocks,
-    mineralMixMeta
+    mineralMixMeta: mineralMixMeta
   };
 }
